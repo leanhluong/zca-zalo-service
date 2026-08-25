@@ -134,7 +134,7 @@ async function downloadToTmp(fileUrl, fileName, tag = 'download') {
       path.extname(new URL(fileUrl).pathname) ||
       extFromContentType(contentType);
     if (!ext) ext = '.bin';
-    const tmpPath = path.join(os.tmpdir(), `zbridge_${crypto.randomUUID()}${ext}`);
+    const tmpPath = path.join(os.tmpdir(), `zca_${crypto.randomUUID()}${ext}`);
     await fs.writeFile(tmpPath, buffer);
     return { tmpPath, contentType };
   }, tag);

@@ -30,7 +30,7 @@ const UPSTREAM_BASE_URL = process.env.UPSTREAM_BASE_URL ?? 'http://localhost:500
 const WEBHOOK_PATH = process.env.UPSTREAM_WEBHOOK_PATH ?? '/api/v1/webhook/zalo-personal';
 
 // Fire-and-forget push về upstream.
-// LƯU Ý (nợ kỹ thuật đã biết — F3 trong audit 31/07): không hàng đợi, không retry. Upstream restart /
+// LƯU Ý (nợ kỹ thuật đã biết): không hàng đợi, không retry. Upstream restart /
 // deploy / 5xx đúng khoảnh khắc này = MẤT TIN VĨNH VIỄN vì Zalo không gửi lại như webhook
 // Facebook/Zalo OA. Khi làm hàng đợi bền thì sửa DUY NHẤT ở hàm này.
 async function push(path, accountId, payload, { tag, what, detail }) {
@@ -130,7 +130,7 @@ export function registerListener(api, accountId, { tag = 'zp' } = {}) {
     api.listener.on('message', async (msg) => {
       if (!msg) return;
       console.log(`[${log}] raw: isSelf=${msg.isSelf} type=${msg.type} threadId=${msg.threadId} fromId=${msg.fromId} toId=${msg.toId}`);
-      // ── Chẩn đoán loại tin (spec pha 1) ────────────────────────────
+      // ── Chẩn đoán loại tin (chỉ log tên field, không log giá trị) ──
       logDiag(msg);
 
       const { content, attachments, contactCard, location } = parseContentAndAttachments(msg);

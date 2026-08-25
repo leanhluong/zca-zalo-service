@@ -12,9 +12,10 @@ const router = express.Router();
 
 async function pushMessageToUpstream(accountId, msg, threadType = ThreadType.User, api = null) {
   try {
-    // Debug: log raw fields để tìm đúng field chứa content
+    // CHỈ log TÊN field, KHÔNG log giá trị — nội dung tin khách là dữ liệu nhạy cảm
+    // (cùng quy tắc với diagLog.js).
     const dataKeys = msg.data ? Object.keys(msg.data) : [];
-    console.log(`[sync] raw msg fields: type=${msg.type} isSelf=${msg.isSelf} threadId=${msg.threadId} msgId=${msg.msgId ?? msg.data?.msgId} dataKeys=[${dataKeys.join(',')}] content=${JSON.stringify(msg.data?.content ?? msg.content)?.substring(0,100)}`);
+    console.log(`[sync] raw msg fields: type=${msg.type} isSelf=${msg.isSelf} threadId=${msg.threadId} msgId=${msg.msgId ?? msg.data?.msgId} dataKeys=[${dataKeys.join(',')}]`);
 
     const { content, attachments, contactCard, location } = parseContentAndAttachments(msg);
     const msgId = String(msg.msgId ?? msg.data?.msgId ?? `zp_${Date.now()}_${Math.random()}`);
@@ -41,7 +42,7 @@ async function pushMessageToUpstream(accountId, msg, threadType = ThreadType.Use
       // ── Tin nhóm — payload kèm field nhóm giống live listener (sessions.js) ──
       const groupId = String(msg.threadId ?? '');
       if (!groupId || (!content && attachments.length === 0)) {
-        console.warn(`[sync] SKIP group — groupId="${groupId}" content="${content}" attachments=${attachments.length} (empty)`);
+        console.warn(`[sync] SKIP group — groupId="${groupId}" contentLen=${content.length} attachments=${attachments.length} (empty)`);
         return false;
       }
       const memberSenderId     = String(msg.data?.uidFrom ?? '');
@@ -88,10 +89,10 @@ async function pushMessageToUpstream(accountId, msg, threadType = ThreadType.Use
         ? String(msg.threadId ?? msg.data?.idTo ?? '')
         : String(msg.threadId ?? msg.fromId ?? msg.data?.uidFrom ?? '');
 
-      console.log(`[sync] parsed: senderId=${senderId} content="${content.substring(0,50)}" msgId=${msgId} direction=${direction}`);
+      console.log(`[sync] parsed: senderId=${senderId} contentLen=${content.length} msgId=${msgId} direction=${direction}`);
 
       if (!senderId || (!content && attachments.length === 0)) {
-        console.warn(`[sync] SKIP — senderId="${senderId}" content="${content}" attachments=${attachments.length} (empty)`);
+        console.warn(`[sync] SKIP — senderId="${senderId}" contentLen=${content.length} attachments=${attachments.length} (empty)`);
         return false;
       }
       payload = { accountId, senderId, content, attachments, msgId, direction, ...(quote ?? {}), ...(mentions ? { mentions } : {}), ...(contactCard ? { contactCard } : {}), ...(location ? { location } : {}), timestamp: msg.data?.ts ?? Date.now() };

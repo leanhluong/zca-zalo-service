@@ -12,7 +12,7 @@
 // File này là lớp 2: khi zca-js đã cạn lượt retry và phát `closed`, đăng nhập LẠI bằng cookies
 // đang lưu ở upstream. Cookies có thể đã bị Zalo thu hồi (đá phiên) — khi đó không cứu được bằng máy,
 // nên số lần thử bị chặn cứng để không quay vòng vô ích; hết lượt thì /health trả wsAlive=false
-// và ZaloPersonalSessionJob phía upstream sẽ báo động cho người thật vào quét QR.
+// để upstream tự báo động cho người thật vào quét QR.
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Số lần tự đăng nhập lại tối đa cho MỘT lần chết. Hết lượt → chờ người quét QR. */

@@ -65,7 +65,8 @@ router.post('/init-qr', async (req, res) => {
           try {
             const accountInfo = await api.fetchAccountInfo();
             phone = accountInfo?.profile?.phoneNumber ?? null;
-            console.log(`[login] fetchAccountInfo phone=${phone} for account ${resolvedAccountId}`);
+            // Che số điện thoại trong log — chỉ giữ 4 số cuối để đối chiếu khi cần.
+            console.log(`[login] fetchAccountInfo phone=${phone ? `***${String(phone).slice(-4)}` : 'null'} for account ${resolvedAccountId}`);
           } catch (err) {
             console.warn('[login] fetchAccountInfo failed (best-effort):', err?.message);
           }
@@ -197,26 +198,6 @@ router.get('/:accountId/health', async (req, res) => {
     `sinceLastEvent=${body.secondsSinceLastEvent ?? '-'}s closeCode=${body.lastCloseCode ?? '-'}` +
     (probeError ? ` probeError="${probeError}"` : ''));
   res.json(body);
-});
-
-// GET /sessions/:accountId/debug-sticker/:id — TẠM THỜI (spec pha 1, câu hỏi 2).
-// Trả nguyên kết quả getStickersDetail để biết sticker KHÁCH GỬI có tra ra URL hay không.
-// GỠ route này ngay sau khi đo xong.
-router.get('/:accountId/debug-sticker/:id', async (req, res) => {
-  const id = Number(req.params.id);
-  if (!Number.isFinite(id)) return res.status(400).json({ error: 'id must be numeric' });
-
-  const session = getSessionByAccountId(req.params.accountId);
-  if (!session) return res.status(404).json({ error: 'Session not found or not logged in' });
-  if (session.status !== 'confirmed' || !session.api) return res.status(503).json({ error: 'Session not ready' });
-  try {
-    const details = await session.api.getStickersDetail([id]);
-    console.log('[diag] getStickersDetail(%s) → %j', id, details);
-    res.json({ ok: true, details });
-  } catch (err) {
-    console.error('[diag] getStickersDetail error:', err?.message);
-    res.status(500).json({ ok: false, error: err?.message });
-  }
 });
 
 // GET /sessions/:accountId/groups

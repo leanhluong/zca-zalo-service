@@ -1,13 +1,10 @@
-// Chẩn đoán loại tin nhắn Zalo (spec pha 1) — chỉ để trả lời 3 câu hỏi đo trước khi viết
-// lại parseContentAndAttachments theo msgType (xem docs/superpowers/plans/...zalo-msgtype-dispatch.md
-// bên upstream). Dùng chung cho MỌI call site inbound (message + old_messages, cả 2 file
-// sessions.js và sessionRestore.js) để tránh lặp + đảm bảo cùng 1 quy tắc log.
+// Chẩn đoán loại tin nhắn Zalo — dùng chung cho MỌI call site inbound (message + old_messages,
+// cả 2 file sessions.js và sessionRestore.js) để tránh lặp + đảm bảo cùng 1 quy tắc log.
 //
 // Quy tắc: CHỈ log TÊN field, KHÔNG log giá trị — nội dung tin khách là dữ liệu nhạy cảm.
 //
-// Ngoại lệ HẸP (được chủ dự án duyệt): id/catId/type của STICKER là ĐỊNH DANH CATALOG CÔNG
-// KHAI (đã log dạng rõ ở /messages/send-sticker, đã trả về FE qua /stickers) — KHÔNG phải
-// nội dung khách viết. Cổng đo cần giá trị này để gọi probe route debug-sticker/:id.
+// Ngoại lệ HẸP: id/catId/type của STICKER là ĐỊNH DANH CATALOG CÔNG KHAI (đã log dạng rõ ở
+// /messages/send-sticker, đã trả về qua /stickers) — KHÔNG phải nội dung khách viết.
 // KHÔNG mở rộng ngoại lệ này sang msgType khác.
 export function logDiag(msg) {
   const diagRaw = msg?.data?.content;

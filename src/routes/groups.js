@@ -77,7 +77,7 @@ async function downloadToTmp(fileUrl, tag = 'download') {
       'image/webp': '.webp', 'image/gif': '.gif',
     }[contentType.split(';')[0].trim().toLowerCase()] ?? '';
     let ext = path.extname(new URL(fileUrl).pathname) || ctExt || '.jpg';
-    const tmpPath = path.join(os.tmpdir(), `zbridge_group_${crypto.randomUUID()}${ext}`);
+    const tmpPath = path.join(os.tmpdir(), `zca_group_${crypto.randomUUID()}${ext}`);
     await fs.writeFile(tmpPath, buffer);
     return tmpPath;
   }, tag);
