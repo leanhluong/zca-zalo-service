@@ -50,16 +50,25 @@ hệ đó expose endpoint nhận POST cùng payload.
 
 ## API
 
+📘 **[Tài liệu API đầy đủ → `docs/API.md`](docs/API.md)** — mọi endpoint kèm input, output,
+mã lỗi, payload webhook và các bẫy đã biết.
+
 | Nhóm | Prefix | Nội dung chính |
 |---|---|---|
-| Phiên | `/sessions` | Tạo QR đăng nhập, trạng thái phiên, danh sách nhóm/thành viên, reaction |
-| Tin nhắn | `/messages` | Gửi text, ảnh, file, sticker, trích dẫn, mention, thu hồi |
-| Sticker | `/stickers` | Danh mục sticker |
+| Phiên | `/sessions` | Tạo QR đăng nhập, trạng thái phiên, sức khoẻ phiên, nhóm/thành viên, reaction |
+| Tin nhắn | `/messages` | Gửi text, ảnh, file, video, voice, sticker; trích dẫn, mention, thu hồi, chuyển tiếp, typing, đã xem |
+| Sticker | `/stickers` | Tìm sticker + bộ gợi ý |
 | Đồng bộ | `/sync` | Kéo lịch sử tin nhắn 1-1 / nhóm rồi đẩy về upstream |
-| Người dùng | `/users` | Thông tin tài khoản Zalo |
-| Danh bạ | `/contacts` | Danh bạ, alias |
-| Nhóm | `/groups` | Thao tác nhóm |
-| Bạn bè | `/friends` | Danh sách bạn, gửi/huỷ lời mời kết bạn |
+| Người dùng | `/users` | Thông tin một người dùng Zalo |
+| Danh bạ | `/contacts` | Danh bạ bạn bè (phân trang) |
+| Nhóm | `/groups` | Tạo nhóm, thêm/xoá thành viên, đổi tên, đổi avatar |
+| Bạn bè | `/friends` | Danh sách bạn, lời mời kết bạn, biệt danh |
+
+Chiều ngược lại — service đẩy tin đến và sự kiện về hệ thống của bạn qua webhook. Payload đầy đủ
+ở [mục 13 của `docs/API.md`](docs/API.md#13-webhook-service-gửi-ra).
+
+> **Service không xác thực request đến.** Ai gọi được cổng 3100 là gửi được tin dưới danh nghĩa
+> tài khoản Zalo đó — đừng expose ra Internet. Xem [phần Bảo mật](docs/API.md#bảo-mật).
 
 ## Khôi phục phiên
 
