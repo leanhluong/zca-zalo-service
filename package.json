@@ -4,12 +4,15 @@
   "description": "Backend API service cho Zalo cá nhân qua zca-js — đăng nhập QR, gửi/nhận tin, nhóm, bạn bè, đồng bộ lịch sử.",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "tsc",
     "typecheck": "tsc --noEmit",
     "start": "node --env-file=.env dist/index.js",
     "dev": "npm run build && node --env-file=.env --watch dist/index.js",
-    "test": "npm run build && node --test \"dist/**/*.test.js\""
+    "test": "npm run build && node scripts/run-tests.mjs"
   },
   "dependencies": {
     "express": "^4.19.2",
