@@ -1,0 +1,15 @@
+services:
+  zca-zalo-service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: zca-zalo-service
+    restart: unless-stopped
+    environment:
+      - PORT=3100
+      - UPSTREAM_BASE_URL=${UPSTREAM_BASE_URL:-http://localhost:5000}
+      - UPSTREAM_WEBHOOK_PATH=${UPSTREAM_WEBHOOK_PATH:-/api/v1/webhook/zalo-personal}
+      - UPSTREAM_SESSIONS_PATH=${UPSTREAM_SESSIONS_PATH:-/api/v1/channels/zalo-personal/internal/sessions}
+      - SYSTEM_KEY=${SYSTEM_KEY:-}
+    ports:
+      - "3100:3100"

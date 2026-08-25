@@ -1,0 +1,21 @@
+{
+  "name": "zca-zalo-service",
+  "version": "1.0.0",
+  "description": "Backend API service cho Zalo cá nhân qua zca-js — đăng nhập QR, gửi/nhận tin, nhóm, bạn bè, đồng bộ lịch sử.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node --env-file=.env src/index.js",
+    "dev": "node --env-file=.env --watch src/index.js",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "image-size": "^1.2.0",
+    "uuid": "^9.0.0",
+    "zca-js": "^2.0.0"
+  },
+  "devDependencies": {
+    "pg": "^8.20.0"
+  }
+}
