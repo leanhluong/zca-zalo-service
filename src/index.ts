@@ -36,8 +36,8 @@ app.use('/contacts', contactsRouter);
 app.use('/groups', groupsRouter);
 app.use('/friends', friendsRouter);
 
-// Nạp hàm tự đăng nhập lại cho sessionHealer — làm ở đây (điểm khởi động) để listener.js không
-// phải import sessionRestore.js, tránh vòng import listener ↔ sessionRestore.
+// Nạp hàm tự đăng nhập lại cho sessionHealer — làm ở đây (điểm khởi động) để listener.ts không
+// phải import sessionRestore.ts, tránh vòng import listener ↔ sessionRestore.
 setHealer(restoreAccountById);
 
 app.listen(PORT, () => {

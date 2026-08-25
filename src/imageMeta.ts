@@ -9,9 +9,14 @@ import { imageSize } from 'image-size';
 // Dùng `image-size` (pure JS, không native binary → chạy tốt trên node:alpine),
 // đọc width/height từ header ảnh; `size` lấy từ dung lượng file thật.
 // Hỗ trợ jpg/jpeg/png/webp/gif — đủ cho các loại ảnh Zalo cho phép gửi.
-export async function imageMetadataGetter(filePath) {
+export async function imageMetadataGetter(filePath: string) {
   const data = await fs.readFile(filePath);
   const dimensions = imageSize(data);
+  // image-size trả undefined khi không đọc được header (file hỏng / định dạng lạ).
+  // zca-js đòi số — đưa 0 vào là gửi ảnh hỏng mà không ai biết vì sao, nên ném rõ ở đây.
+  if (dimensions.width == null || dimensions.height == null) {
+    throw new Error(`Không đọc được kích thước ảnh: ${filePath}`);
+  }
   return {
     width: dimensions.width,
     height: dimensions.height,

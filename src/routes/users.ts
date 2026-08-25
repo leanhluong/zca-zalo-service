@@ -1,6 +1,7 @@
 import express from 'express';
 import { getSessionByAccountId } from '../sessionStore.js';
 import { extractUserProfile } from '../userProfile.js';
+import { errMsg } from '../errors.js';
 
 const router = express.Router();
 
@@ -18,7 +19,7 @@ router.get('/:accountId/profile/:userId', async (req, res) => {
     const result = await session.api.getUserInfo([userId]);
 
     // getUserInfo trả object có khoá theo userId, KHÔNG phải mảng — đọc `result.data` như mảng
-    // là luôn ra rỗng (xem src/userProfile.js). Cùng lỗi từng làm mọi tin gửi đi mất tên người nhận.
+    // là luôn ra rỗng (xem src/userProfile.ts). Cùng lỗi từng làm mọi tin gửi đi mất tên người nhận.
     const { displayName, avatarUrl } = extractUserProfile(result, userId);
 
     if (!displayName && !avatarUrl) {
@@ -28,8 +29,8 @@ router.get('/:accountId/profile/:userId', async (req, res) => {
 
     res.json({ userId: String(userId), displayName, avatarUrl });
   } catch (err) {
-    console.error(`[users] getUserInfo error:`, err?.message);
-    res.status(500).json({ error: err.message });
+    console.error(`[users] getUserInfo error:`, errMsg(err));
+    res.status(500).json({ error: errMsg(err) });
   }
 });
 

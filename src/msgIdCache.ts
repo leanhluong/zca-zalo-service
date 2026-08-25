@@ -3,9 +3,12 @@
 // Listener quan sát message nào thì lưu cặp này lại để route reaction tra cứu ngược.
 
 const MAX_ENTRIES = 5000;
-const cache = new Map(); // insertion-ordered → dùng làm LRU đơn giản
+const cache = new Map<string, string>(); // insertion-ordered → dùng làm LRU đơn giản
 
-export function rememberMsgId(gMsgID, cliMsgId) {
+export function rememberMsgId(
+  gMsgID: string | number | null | undefined,
+  cliMsgId: string | number | null | undefined,
+): void {
   if (gMsgID == null || cliMsgId == null) return;
   const key = String(gMsgID);
   const val = String(cliMsgId);
@@ -16,11 +19,11 @@ export function rememberMsgId(gMsgID, cliMsgId) {
   // bound size: xoá entry cũ nhất (đầu Map)
   if (cache.size > MAX_ENTRIES) {
     const oldest = cache.keys().next().value;
-    cache.delete(oldest);
+    if (oldest !== undefined) cache.delete(oldest);
   }
 }
 
-export function getCliMsgId(gMsgID) {
+export function getCliMsgId(gMsgID: string | number | null | undefined): string | null {
   if (gMsgID == null) return null;
   return cache.get(String(gMsgID)) ?? null;
 }

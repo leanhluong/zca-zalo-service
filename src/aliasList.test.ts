@@ -4,15 +4,20 @@ import { fetchAllAliases } from './aliasList.js';
 
 // API giả: trả `total` alias, chia trang theo count zca-js truyền vào.
 // Ghi lại mọi (count, page) đã gọi để khẳng định có phân trang thật.
-function fakeApi(total, { failFromPage = null } = {}) {
-  const calls = [];
+interface FakeCall {
+  count: number;
+  page: number;
+}
+
+function fakeApi(total: number, { failFromPage = null }: { failFromPage?: number | null } = {}) {
+  const calls: FakeCall[] = [];
   return {
     calls,
-    getAliasList: async (count, page) => {
+    getAliasList: async (count: number, page: number) => {
       calls.push({ count, page });
       if (failFromPage !== null && page >= failFromPage) throw new Error('zalo rate limit');
       const start = (page - 1) * count;
-      const items = [];
+      const items: Array<{ userId: string; alias: string }> = [];
       for (let i = start; i < Math.min(start + count, total); i += 1) {
         items.push({ userId: String(1000 + i), alias: `alias-${i}` });
       }

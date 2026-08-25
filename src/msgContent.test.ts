@@ -1,12 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseContentAndAttachments } from './msgContent.js';
+import type { ZaloMessage, ZaloRaw } from './types.js';
 
 // Dựng message zca-js tối thiểu. extra dùng cho isSelf khi test nhật ký cuộc gọi.
-const msg = (msgType, content, extra = {}) => ({ data: { msgType, content }, ...extra });
+const msg = (msgType: string, content: ZaloRaw, extra: ZaloRaw = {}): ZaloMessage =>
+  ({ data: { msgType, content }, ...extra });
 
 // Bộ mẫu dùng chung cho kiểm thử bất biến (Task 3 dùng lại).
-export const SAMPLES = [
+export const SAMPLES: Array<[string, ZaloMessage]> = [
   ['văn bản',        msg('webchat', 'chào shop')],
   ['danh thiếp',     msg('chat.recommended', { phone: '0389754831', caption: 'Nguyễn Văn A', action: 'recommened.user' })],
   ['cuộc gọi nhỡ',   msg('chat.recommended', { title: 'sendBubbleMessage', params: JSON.stringify({ callId: '123', callType: '1', duration: 0, callStatus: 'missed' }) })],
@@ -133,7 +135,7 @@ test('tin hệ thống (chuỗi JSON có action) → lấy title làm content', 
   assert.equal(r.content, 'Bạn đã tạo nhắc hẹn mới lúc 14:15.');
 });
 
-// Ba test dưới đây khoá hành vi HIỆN TẠI của nhánh "text fallback" (msgContent.js dòng
+// Ba test dưới đây khoá hành vi HIỆN TẠI của nhánh "text fallback" (msgContent.ts dòng
 // 520-522): khi content là object KHÔNG có href/thumb, hàm ưu tiên field text người-đọc-được
 // (title/text/description/caption/msg) TRƯỚC KHI xét mediaLabelByType theo msgType (dòng
 // 527-537). Refactor msgType-dispatch SẮP TỚI dự kiến trả nhãn theo msgType TRƯỚC và không

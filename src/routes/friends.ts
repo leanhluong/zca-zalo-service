@@ -1,6 +1,9 @@
 import express from 'express';
 import { getSessionByAccountId, listSessions } from '../sessionStore.js';
 import { fetchAllAliases } from '../aliasList.js';
+import { errMsg } from '../errors.js';
+import type { Response } from 'express';
+import type { SessionRecord, ZaloApi, ZaloRaw } from '../types.js';
 
 const router = express.Router();
 
@@ -27,8 +30,10 @@ const router = express.Router();
 //   GroupMemberProfile (getGroupMembersInfo.d.ts): { displayName, zaloName, avatar,
 //       accountStatus, type, globalId, id }
 
-// Lookup + guard session (mirror messages.js resolveSession). Trả session hoặc gửi lỗi qua res.
-function resolveSession(res, tag, accountId) {
+// Lookup + guard session (mirror messages.ts resolveSession). Trả session hoặc gửi lỗi qua res.
+type ReadySession = SessionRecord & { api: ZaloApi };
+
+function resolveSession(res: Response, tag: string, accountId: string): ReadySession | null {
   const session = getSessionByAccountId(accountId);
   if (!session) {
     const active = listSessions();
@@ -47,13 +52,13 @@ function resolveSession(res, tag, accountId) {
     res.status(503).json({ error: 'API not ready yet — login still in progress' });
     return null;
   }
-  return session;
+  return session as ReadySession;
 }
 
-// Chuyển lỗi thô từ zca-js thành message dễ hiểu (mirror ý humanizeSendError của messages.js).
+// Chuyển lỗi thô từ zca-js thành message dễ hiểu (mirror ý humanizeSendError của messages.ts).
 // zca-js ném ZaloApiError với .message; một số case chỉ có mã số → bọc lại cho upstream đọc được.
-function humanizeFriendError(err) {
-  const raw = err?.message ?? String(err ?? 'unknown error');
+function humanizeFriendError(err: unknown): string {
+  const raw = errMsg(err) ?? String(err ?? 'unknown error');
   const lower = raw.toLowerCase();
   if (lower.includes('already') && lower.includes('friend')) return 'Đã là bạn bè';
   if (lower.includes('block')) return 'Người dùng đã chặn hoặc bị chặn';
@@ -65,10 +70,10 @@ function humanizeFriendError(err) {
 // GET /friends?accountId=&keyword=&count=&page=
 // Trả { ok, friends: [{ userId, displayName, avatarUrl, phone? }] }
 router.get('/', async (req, res) => {
-  const accountId = req.query.accountId;
+  const accountId = req.query.accountId as string | undefined;
   const keyword = (req.query.keyword ?? '').toString().trim().toLowerCase();
-  const count = parseInt(req.query.count ?? '1000', 10);
-  const page = parseInt(req.query.page ?? '1', 10);
+  const count = parseInt(String(req.query.count ?? '1000'), 10);
+  const page = parseInt(String(req.query.page ?? '1'), 10);
 
   console.log(`[friends] GET accountId=${accountId} keyword="${keyword}" count=${count} page=${page}`);
 
@@ -82,16 +87,16 @@ router.get('/', async (req, res) => {
 
   try {
     // getAllFriends(count, page) → User[]
-    const result = await session.api.getAllFriends(count, page);
+    const result: ZaloRaw = await session.api.getAllFriends(count, page);
     // utils.resolve thường trả array trực tiếp; phòng shape {data:[...]}.
-    let raw = [];
+    let raw: ZaloRaw[] = [];
     if (Array.isArray(result)) raw = result;
     else if (Array.isArray(result?.data)) raw = result.data;
     else if (Array.isArray(result?.friends)) raw = result.friends;
     else console.warn(`[friends] unexpected response structure: ${JSON.stringify(result ?? null).substring(0, 300)}`);
 
     let friends = raw
-      .map((f) => ({
+      .map((f: ZaloRaw) => ({
         userId: String(f.userId ?? f.uid ?? f.user_id ?? ''),
         displayName: f.zaloName ?? f.displayName ?? f.dName ?? f.alias ?? f.name ?? null,
         avatarUrl: f.avatar ?? f.avatarSm ?? f.avt ?? f.avatarUrl ?? null,
@@ -121,14 +126,14 @@ router.get('/', async (req, res) => {
           if (!c.phone) c.phone = p.phoneNumber ?? null;
         }
       } catch (e) {
-        console.warn(`[friends] getUserInfo enrich failed: ${e?.message}`);
+        console.warn(`[friends] getUserInfo enrich failed: ${errMsg(e)}`);
       }
     }
 
     console.log(`[friends] OK — ${friends.length} friends for account ${accountId}`);
     res.json({ ok: true, friends });
   } catch (err) {
-    console.error(`[friends] 500 — getAllFriends error:`, err?.message);
+    console.error(`[friends] 500 — getAllFriends error:`, errMsg(err));
     res.status(500).json({ ok: false, error: humanizeFriendError(err) });
   }
 });
@@ -155,7 +160,7 @@ router.post('/request', async (req, res) => {
     console.log(`[friends/request] OK — userId=${userId}`);
     res.json({ ok: true });
   } catch (err) {
-    console.error(`[friends/request] 500 — error for userId=${userId}:`, err?.message);
+    console.error(`[friends/request] 500 — error for userId=${userId}:`, errMsg(err));
     res.status(500).json({ ok: false, error: humanizeFriendError(err) });
   }
 });
@@ -180,7 +185,7 @@ router.post('/accept', async (req, res) => {
     console.log(`[friends/accept] OK — userId=${userId}`);
     res.json({ ok: true });
   } catch (err) {
-    console.error(`[friends/accept] 500 — error for userId=${userId}:`, err?.message);
+    console.error(`[friends/accept] 500 — error for userId=${userId}:`, errMsg(err));
     res.status(500).json({ ok: false, error: humanizeFriendError(err) });
   }
 });
@@ -191,7 +196,7 @@ router.post('/accept', async (req, res) => {
 // Best-effort cho upstream enrich: mọi lỗi (session chưa sẵn sàng / API lỗi) → { items: [] } + log,
 // KHÔNG 500 để không làm gãy luồng đồng bộ contact của upstream.
 router.get('/aliases', async (req, res) => {
-  const accountId = req.query.accountId;
+  const accountId = req.query.accountId as string | undefined;
 
   console.log(`[friends/aliases] GET accountId=${accountId}`);
 
@@ -208,7 +213,7 @@ router.get('/aliases', async (req, res) => {
   }
 
   try {
-    // Duyệt HẾT các trang (xem src/aliasList.js) — gọi getAliasList trần chỉ được 100 alias đầu.
+    // Duyệt HẾT các trang (xem src/aliasList.ts) — gọi getAliasList trần chỉ được 100 alias đầu.
     const { items, pagesRead, stopReason } = await fetchAllAliases(session.api, {
       log: (msg) => console.warn(`[friends/aliases] ${msg} (accountId=${accountId})`),
     });
@@ -221,7 +226,7 @@ router.get('/aliases', async (req, res) => {
     res.json({ items });
   } catch (err) {
     // Best-effort — không ném 500, trả rỗng để upstream bỏ qua bước enrich alias.
-    console.error(`[friends/aliases] getAliasList error for accountId=${accountId}:`, err?.message);
+    console.error(`[friends/aliases] getAliasList error for accountId=${accountId}:`, errMsg(err));
     res.json({ items: [] });
   }
 });
@@ -250,7 +255,7 @@ router.post('/alias', async (req, res) => {
     console.log(`[friends/alias] OK — friendId=${friendId} alias="${aliasStr}"`);
     res.json({ ok: true });
   } catch (err) {
-    console.error(`[friends/alias] 500 — error for friendId=${friendId}:`, err?.message);
+    console.error(`[friends/alias] 500 — error for friendId=${friendId}:`, errMsg(err));
     res.status(500).json({ ok: false, error: humanizeFriendError(err) });
   }
 });

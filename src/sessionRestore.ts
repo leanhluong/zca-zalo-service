@@ -3,9 +3,11 @@ import { Zalo } from 'zca-js';
 import { createSession, updateSession, adoptSession } from './sessionStore.js';
 import { registerListener } from './listener.js';
 import { imageMetadataGetter } from './imageMeta.js';
+import { errMsg } from './errors.js';
+import type { UpstreamSession } from './types.js';
 
 // Replicate zca-js generateZaloUUID: randomUUID + MD5(userAgent)
-function generateZaloUUID(userAgent) {
+function generateZaloUUID(userAgent: string): string {
   return crypto.randomUUID() + '-' + crypto.createHash('md5').update(userAgent).digest('hex');
 }
 
@@ -14,12 +16,12 @@ const UPSTREAM_BASE_URL = process.env.UPSTREAM_BASE_URL ?? 'http://localhost:500
 const SESSIONS_PATH = process.env.UPSTREAM_SESSIONS_PATH ?? '/api/v1/channels/zalo-personal/internal/sessions';
 const USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0";
 
-// Toàn bộ listener + đường push về upstream nằm ở listener.js — dùng CHUNG với đường login QR
-// (routes/sessions.js). Trước đây mỗi file giữ một bản chép riêng và hai bản trôi lệch nhau:
+// Toàn bộ listener + đường push về upstream nằm ở listener.ts — dùng CHUNG với đường login QR
+// (routes/sessions.ts). Trước đây mỗi file giữ một bản chép riêng và hai bản trôi lệch nhau:
 // bản QR thiếu 5/9 listener và thiếu lưới đỡ avatar thành viên nhóm, bản restore thiếu
 // getUserInfo fallback cho tin 1-1.
 
-async function restoreOneSession(session) {
+async function restoreOneSession(session: UpstreamSession): Promise<boolean> {
   const { externalId, displayName, cookiesBase64, imei: storedImei, userAgent: storedUserAgent } = session;
   try {
     const cookies = JSON.parse(Buffer.from(cookiesBase64, 'base64').toString('utf8'));
@@ -42,13 +44,13 @@ async function restoreOneSession(session) {
     console.log(`[restore] ✅ Session restored: ${displayName} (${externalId})`);
     return true;
   } catch (err) {
-    console.error(`[restore] ❌ Failed to restore ${displayName} (${externalId}):`, err?.message);
+    console.error(`[restore] ❌ Failed to restore ${displayName} (${externalId}):`, errMsg(err));
     return false;
   }
 }
 
 /** Đọc danh sách phiên cần khôi phục từ upstream. Trả mảng rỗng khi upstream không trả lời. */
-async function fetchSessionsFromUpstream() {
+async function fetchSessionsFromUpstream(): Promise<UpstreamSession[]> {
   const url = `${UPSTREAM_BASE_URL}${SESSIONS_PATH}`;
   const resp = await fetch(url, {
     headers: { 'X-System-Key': process.env.SYSTEM_KEY ?? '' },
@@ -57,40 +59,40 @@ async function fetchSessionsFromUpstream() {
     console.warn(`[restore] upstream returned ${resp.status}`);
     return [];
   }
-  return await resp.json();
+  return (await resp.json()) as UpstreamSession[];
 }
 
 export async function restoreSessionsFromUpstream() {
   console.log(`[restore] Fetching sessions from ${UPSTREAM_BASE_URL}...`);
   try {
-    const sessions = await fetchSessionsFromUpstream();
+    const sessions: UpstreamSession[] = await fetchSessionsFromUpstream();
     console.log(`[restore] Got ${sessions.length} session(s) to restore`);
     for (const s of sessions) {
       await restoreOneSession(s);
     }
   } catch (err) {
-    console.warn(`[restore] Cannot reach upstream (${err?.message}) — skip restore, wait for manual QR login`);
+    console.warn(`[restore] Cannot reach upstream (${errMsg(err)}) — skip restore, wait for manual QR login`);
   }
 }
 
 /**
  * Đăng nhập lại ĐÚNG MỘT tài khoản bằng cookies đang lưu ở upstream — dùng cho tự chữa khi
- * WebSocket đóng hẳn (sessionHealer.js). Trả true nếu phiên đã sống lại.
+ * WebSocket đóng hẳn (sessionHealer.ts). Trả true nếu phiên đã sống lại.
  *
  * Cookies có thể đã bị Zalo vô hiệu (khách đăng nhập Zalo PC nơi khác = đá phiên này). Khi đó
  * `zalo.login` ném lỗi và hàm trả false — healer đếm lượt rồi dừng, không quay vòng vô ích.
  */
-export async function restoreAccountById(externalId) {
+export async function restoreAccountById(externalId: string): Promise<boolean> {
   try {
-    const sessions = await fetchSessionsFromUpstream();
-    const target = sessions.find((s) => String(s.externalId) === String(externalId));
+    const sessions: UpstreamSession[] = await fetchSessionsFromUpstream();
+    const target = sessions.find((s: UpstreamSession) => String(s.externalId) === String(externalId));
     if (!target) {
       console.warn(`[restore] Không tìm thấy cookies cho account ${externalId} ở upstream — không tự chữa được`);
       return false;
     }
     return await restoreOneSession(target);
   } catch (err) {
-    console.warn(`[restore] restoreAccountById(${externalId}) lỗi:`, err?.message);
+    console.warn(`[restore] restoreAccountById(${externalId}) lỗi:`, errMsg(err));
     return false;
   }
 }

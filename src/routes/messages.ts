@@ -6,16 +6,23 @@ import crypto from 'crypto';
 import { ThreadType, Reactions } from 'zca-js';
 import { getSessionByAccountId, listSessions } from '../sessionStore.js';
 import { getInboundQuote, getUndoRef, getReactRef, getForwardSource } from '../inboundMsgCache.js';
+import { errMsg, errName, errStack, isTimeout } from '../errors.js';
+import type { Request, Response } from 'express';
+import type { SessionRecord, ZaloApi, ZaloRaw } from '../types.js';
 
 const router = express.Router();
 
 // Map threadType string từ body → ThreadType enum ('Group' → Group, else User).
-function mapThreadType(threadType) {
+function mapThreadType(threadType?: string): ThreadType {
   return threadType === 'Group' ? ThreadType.Group : ThreadType.User;
 }
 
 // Lookup + guard session (giống send-text). Trả { session } hoặc gửi lỗi qua res.
-function resolveSession(res, tag, accountId) {
+// Trả về session ĐÃ ĐẢM BẢO api != null (hàm tự gửi lỗi qua res khi thiếu) — nói điều đó
+// để mọi call site khỏi phải kiểm null lại.
+type ReadySession = SessionRecord & { api: ZaloApi };
+
+function resolveSession(res: Response, tag: string, accountId: string): ReadySession | null {
   const session = getSessionByAccountId(accountId);
   if (!session) {
     const active = listSessions();
@@ -34,17 +41,17 @@ function resolveSession(res, tag, accountId) {
     res.status(503).json({ error: 'API not ready yet — login still in progress' });
     return null;
   }
-  return session;
+  return session as ReadySession;
 }
 
 // Suy đuôi file từ content-type thật của response (khi fileName không có đuôi rõ).
 // zca-js chọn nhánh xử lý attachment THEO ĐUÔI FILE (getFileExtension): jpg/jpeg/png/webp
 // mới được coi là ảnh gửi kèm caption; gif đi nhánh riêng. Nếu ảnh png/webp bị lưu .jpg,
 // image-size + Zalo có thể xử lý sai → phải map đúng đuôi theo content-type.
-function extFromContentType(contentType) {
+function extFromContentType(contentType: string | null | undefined): string {
   if (!contentType) return '';
   const ct = contentType.split(';')[0].trim().toLowerCase();
-  const map = {
+  const map: Record<string, string> = {
     'image/jpeg': '.jpg',
     'image/jpg': '.jpg',
     'image/png': '.png',
@@ -57,7 +64,7 @@ function extFromContentType(contentType) {
 }
 
 // Chờ ms mili-giây (backoff giữa các lần retry).
-function delay(ms) {
+function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
@@ -68,44 +75,44 @@ const ZCA_TIMEOUT_MEDIA_MS = 20000;
 // Đánh dấu lỗi timeout để route trả 504 (upstream coi 5xx là TRANSIENT → ghi outbox + retry backoff)
 // thay vì 500 chung chung.
 class ZcaTimeoutError extends Error {
-  constructor(tag, ms) {
+  isTimeout = true;
+  constructor(tag: string, ms: number) {
     super(`${tag}: quá thời gian chờ ${ms}ms từ Zalo`);
-    this.isTimeout = true;
   }
 }
 
 // Bọc 1 promise với deadline. zca-js KHÔNG có timeout nội bộ: khi phiên Zalo hỏng hoặc WebSocket
 // đứt, sendMessage có thể treo vô hạn → request HTTP của upstream treo theo → app (receiveTimeout 30s)
 // huỷ trước, tin kẹt trạng thái Sending và KHÔNG đi vào đường outbox/retry. Luôn phải có deadline.
-function withTimeout(promise, tag, ms) {
-  let timer;
-  const deadline = new Promise((_, reject) => {
+function withTimeout<T>(promise: Promise<T>, tag: string, ms: number): Promise<T> {
+  let timer: NodeJS.Timeout;
+  const deadline = new Promise<never>((_, reject) => {
     timer = setTimeout(() => reject(new ZcaTimeoutError(tag, ms)), ms);
   });
   return Promise.race([promise, deadline]).finally(() => clearTimeout(timer));
 }
 
 // Trả lỗi cho client: timeout → 504 (retry được), còn lại → 500.
-function sendZcaError(res, tag, err, context) {
-  const status = err?.isTimeout ? 504 : 500;
-  console.error(`[${tag}] ${status} — ${context}:`, err?.message);
-  res.status(status).json({ error: err?.message ?? 'unknown error' });
+function sendZcaError(res: Response, tag: string, err: unknown, context: string): void {
+  const status = isTimeout(err) ? 504 : 500;
+  console.error(`[${tag}] ${status} — ${context}:`, errMsg(err));
+  res.status(status).json({ error: errMsg(err) ?? 'unknown error' });
 }
 
 // Bọc 1 async fn với retry cho lỗi TRANSIENT (mạng/tải/upload chập chờn).
 // Chỉ retry tối đa `attempts` lần với backoff ngắn tăng dần. Lỗi ở lần cuối được ném ra.
-async function withRetry(fn, tag, attempts = 3, timeoutMs = ZCA_TIMEOUT_MEDIA_MS) {
-  let lastErr;
+async function withRetry<T>(fn: () => Promise<T> | T, tag: string, attempts = 3, timeoutMs = ZCA_TIMEOUT_MEDIA_MS): Promise<T> {
+  let lastErr: unknown;
   for (let i = 1; i <= attempts; i++) {
     try {
       return await withTimeout(Promise.resolve().then(fn), tag, timeoutMs);
     } catch (err) {
       // Timeout = phiên Zalo/mạng đang treo, thử lại ngay cũng treo tiếp và ăn thêm nguyên
       // một deadline nữa → ném luôn để route trả 504, upstream ghi outbox retry với backoff.
-      if (err?.isTimeout) throw err;
+      if (isTimeout(err)) throw err;
       lastErr = err;
       if (i < attempts) {
-        console.warn(`[${tag}] attempt ${i}/${attempts} failed: ${err?.message} — retrying...`);
+        console.warn(`[${tag}] attempt ${i}/${attempts} failed: ${errMsg(err)} — retrying...`);
         await delay(300 * i);
       }
     }
@@ -116,7 +123,7 @@ async function withRetry(fn, tag, attempts = 3, timeoutMs = ZCA_TIMEOUT_MEDIA_MS
 // Tải fileUrl về file tạm trong os.tmpdir(). Trả { tmpPath, contentType }.
 // zca-js sendMessage attachment cần ĐƯỜNG DẪN FILE LOCAL (string) — nó fs.readFile(source).
 // Có retry cho lỗi tải chập chờn (fetch fail / HTTP 5xx).
-async function downloadToTmp(fileUrl, fileName, tag = 'download') {
+async function downloadToTmp(fileUrl: string, fileName: string | null, tag = 'download'): Promise<{ tmpPath: string; contentType: string }> {
   return withRetry(async () => {
     const resp = await fetch(fileUrl);
     if (!resp.ok) {
@@ -146,8 +153,8 @@ async function downloadToTmp(fileUrl, fileName, tag = 'download') {
 // Lưu ý: mentions chỉ có hiệu lực với ThreadType.Group (nhóm) — thư viện bỏ qua với User.
 // Chuẩn hoá message lỗi từ zca-js/tải file thành thông điệp RÕ để upstream/FE hiển thị.
 // Đặc biệt: lỗi vượt giới hạn dung lượng của Zalo → câu tiếng Việt dễ hiểu.
-function humanizeSendError(err) {
-  const msg = err?.message ?? 'Unknown error';
+function humanizeSendError(err: unknown): string {
+  const msg = errMsg(err) ?? 'Unknown error';
   const m = /size exceed maximum size of (\d+)\s*MB/i.exec(msg);
   if (m) {
     return `Ảnh/tệp vượt giới hạn Zalo (tối đa ${m[1]} MB)`;
@@ -161,11 +168,11 @@ function humanizeSendError(err) {
   return msg;
 }
 
-function mapMentions(mentions) {
+function mapMentions(mentions: unknown): Array<{ uid: string; pos: number; len: number }> | undefined {
   if (!Array.isArray(mentions)) return undefined;
   const mapped = mentions
-    .filter((m) => m && m.uid && Number(m.length) > 0)
-    .map((m) => ({
+    .filter((m: ZaloRaw) => m && m.uid && Number(m.length) > 0)
+    .map((m: ZaloRaw) => ({
       uid: String(m.uid),
       pos: Number(m.offset) || 0,
       len: Number(m.length),
@@ -180,16 +187,16 @@ function mapMentions(mentions) {
 //  - key enum:  "HEART","LIKE","HAHA"... (không phân biệt hoa/thường)
 //  - value enum thô: "/-heart", ":>"... (upstream gửi thẳng ký hiệu Zalo)
 // Trả chuỗi Reactions hợp lệ (có thể là "" cho unreact) hoặc null nếu icon không hợp lệ kiểu.
-function mapReaction(icon) {
+function mapReaction(icon: unknown): string | null {
   if (icon == null) return Reactions.NONE; // không truyền → coi như unreact
   if (typeof icon !== 'string') return null;
   const raw = icon.trim();
   if (raw === '' || raw.toUpperCase() === 'NONE') return Reactions.NONE;
   // 1) khớp theo KEY enum (HEART, LIKE, ...)
   const key = raw.toUpperCase();
-  if (Object.prototype.hasOwnProperty.call(Reactions, key)) return Reactions[key];
+  if (Object.prototype.hasOwnProperty.call(Reactions, key)) return (Reactions as unknown as Record<string, string>)[key]!;
   // 2) khớp theo VALUE enum thô (upstream gửi thẳng "/-heart")
-  const values = Object.values(Reactions);
+  const values: string[] = Object.values(Reactions);
   if (values.includes(raw)) return raw;
   return null; // không nhận diện được
 }
@@ -213,7 +220,7 @@ router.post('/send-text', async (req, res) => {
 
   try {
     console.log(`[send-text] sending to recipientId=${recipientId}...`);
-    const messagePayload = { msg: content };
+    const messagePayload: ZaloRaw = { msg: content };
     if (mappedMentions) messagePayload.mentions = mappedMentions;
     // Reply/trích dẫn: nếu upstream gửi quoteMsgId → tra tin gốc trong cache để dựng quote.
     // Cache miss (tin cũ / bridge đã restart) → gửi KHÔNG quote (graceful, không lỗi).
@@ -253,7 +260,7 @@ router.post('/send-image', async (req, res) => {
   if (!session) return;
 
   const mappedThreadType = mapThreadType(threadType);
-  let tmpPath = null;
+  let tmpPath: string | null = null;
   try {
     // fileName không truyền → đuôi suy từ URL path hoặc content-type thật (png/webp/gif...).
     const dl = await downloadToTmp(fileUrl, null, 'send-image');
@@ -262,7 +269,7 @@ router.post('/send-image', async (req, res) => {
     // Upload/gửi qua Zalo có thể chập chờn mạng → retry ngắn.
     const result = await withRetry(
       () => session.api.sendMessage(
-        { msg: caption ?? '', attachments: [tmpPath] },
+        { msg: caption ?? '', attachments: [tmpPath!] },
         recipientId,
         mappedThreadType
       ),
@@ -273,10 +280,10 @@ router.post('/send-image', async (req, res) => {
     console.log(`[send-image] OK — messageId=${messageId}`);
     res.json({ messageId: String(messageId) });
   } catch (err) {
-    console.error(`[send-image] 500 — error sending to ${recipientId}: ${err?.message}`);
-    console.error(err?.stack);
+    console.error(`[send-image] 500 — error sending to ${recipientId}: ${errMsg(err)}`);
+    console.error(errStack(err));
     // Timeout → 504 để upstream phân loại TRANSIENT (ghi outbox + retry), còn lại giữ 500.
-    res.status(err?.isTimeout ? 504 : 500).json({ error: humanizeSendError(err), code: err?.name });
+    res.status(isTimeout(err) ? 504 : 500).json({ error: humanizeSendError(err), code: errName(err) });
   } finally {
     if (tmpPath) {
       try { await fs.unlink(tmpPath); } catch (e) { /* best-effort cleanup */ }
@@ -300,14 +307,14 @@ router.post('/send-file', async (req, res) => {
   if (!session) return;
 
   const mappedThreadType = mapThreadType(threadType);
-  let tmpPath = null;
+  let tmpPath: string | null = null;
   try {
     const dl = await downloadToTmp(fileUrl, fileName ?? 'file', 'send-file');
     tmpPath = dl.tmpPath;
     console.log(`[send-file] downloaded → ${tmpPath} (ct=${dl.contentType || '?'}), sending to ${recipientId}...`);
     const result = await withRetry(
       () => session.api.sendMessage(
-        { msg: '', attachments: [tmpPath] },
+        { msg: '', attachments: [tmpPath!] },
         recipientId,
         mappedThreadType
       ),
@@ -317,10 +324,10 @@ router.post('/send-file', async (req, res) => {
     console.log(`[send-file] OK — messageId=${messageId}`);
     res.json({ messageId: String(messageId) });
   } catch (err) {
-    console.error(`[send-file] 500 — error sending to ${recipientId}: ${err?.message}`);
-    console.error(err?.stack);
+    console.error(`[send-file] 500 — error sending to ${recipientId}: ${errMsg(err)}`);
+    console.error(errStack(err));
     // Timeout → 504 để upstream phân loại TRANSIENT (ghi outbox + retry), còn lại giữ 500.
-    res.status(err?.isTimeout ? 504 : 500).json({ error: humanizeSendError(err), code: err?.name });
+    res.status(isTimeout(err) ? 504 : 500).json({ error: humanizeSendError(err), code: errName(err) });
   } finally {
     if (tmpPath) {
       try { await fs.unlink(tmpPath); } catch (e) { /* best-effort cleanup */ }
@@ -372,8 +379,8 @@ router.post('/undo', async (req, res) => {
     console.log(`[undo] OK — msgId=${ref.msgId}`);
     res.json({ ok: true });
   } catch (err) {
-    console.error(`[undo] 500 — error recalling msgId=${msgId}:`, err?.message);
-    res.status(500).json({ error: err.message });
+    console.error(`[undo] 500 — error recalling msgId=${msgId}:`, errMsg(err));
+    res.status(500).json({ error: errMsg(err) });
   }
 });
 
@@ -421,7 +428,7 @@ router.post('/react', async (req, res) => {
   try {
     const isUnreact = mappedIcon === Reactions.NONE;
     console.log(`[react] ${isUnreact ? 'un-reacting' : 'reacting'} msgId=${dataRef.msgId} → threadId=${threadId}...`);
-    const result = await session.api.addReaction(mappedIcon, {
+    const result = await session.api.addReaction(mappedIcon as Reactions, {
       data: { msgId: dataRef.msgId, cliMsgId: dataRef.cliMsgId },
       threadId: String(threadId),
       type: mapThreadType(threadType),
@@ -433,8 +440,8 @@ router.post('/react', async (req, res) => {
     console.log(`[react] OK — msgId=${dataRef.msgId} messageId=${messageId ?? '-'}`);
     res.json(messageId ? { ok: true, messageId } : { ok: true });
   } catch (err) {
-    console.error(`[react] 500 — error reacting msgId=${msgId}:`, err?.message);
-    res.status(500).json({ error: err.message });
+    console.error(`[react] 500 — error reacting msgId=${msgId}:`, errMsg(err));
+    res.status(500).json({ error: errMsg(err) });
   }
 });
 
@@ -499,12 +506,12 @@ router.post('/forward', async (req, res) => {
   }
 
   // reference (decorLog) tuỳ chọn: chỉ set khi có đủ ts từ cache tin gốc.
-  const payload = { message };
+  const payload: ZaloRaw = { message };
   if (refTs != null && msgId != null) {
     payload.reference = { id: String(msgId), ts: refTs, logSrcType: 1, fwLvl: 1 };
   }
 
-  const results = [];
+  const results: Array<{ threadId: string; messageId?: string; ok: boolean; error?: unknown }> = [];
   for (const [type, threadIds] of byType.entries()) {
     try {
       const resp = await session.api.forwardMessage(payload, threadIds, type);
@@ -512,7 +519,7 @@ router.post('/forward', async (req, res) => {
       // gán msgId thành công theo index, còn lại đánh dấu fail.
       const success = Array.isArray(resp?.success) ? resp.success : [];
       const fail = Array.isArray(resp?.fail) ? resp.fail : [];
-      threadIds.forEach((threadId, i) => {
+      threadIds.forEach((threadId: string, i: number) => {
         if (i < success.length) {
           results.push({ threadId, messageId: String(success[i].msgId), ok: true });
         } else {
@@ -521,9 +528,9 @@ router.post('/forward', async (req, res) => {
         }
       });
     } catch (err) {
-      console.error(`[forward] error forwarding to type=${type}:`, err?.message);
-      threadIds.forEach((threadId) => {
-        results.push({ threadId, ok: false, error: err?.message ?? 'forward failed' });
+      console.error(`[forward] error forwarding to type=${type}:`, errMsg(err));
+      threadIds.forEach((threadId: string) => {
+        results.push({ threadId, ok: false, error: errMsg(err) ?? 'forward failed' });
       });
     }
   }
@@ -554,8 +561,8 @@ router.post('/send-typing', async (req, res) => {
     await session.api.sendTypingEvent(String(threadId), mapThreadType(threadType));
     res.json({ ok: true });
   } catch (err) {
-    console.error(`[send-typing] error for threadId=${threadId}:`, err?.message);
-    res.status(200).json({ ok: false, reason: err?.message ?? 'send-typing failed' });
+    console.error(`[send-typing] error for threadId=${threadId}:`, errMsg(err));
+    res.status(200).json({ ok: false, reason: errMsg(err) ?? 'send-typing failed' });
   }
 });
 
@@ -602,8 +609,8 @@ router.post('/send-seen', async (req, res) => {
     await session.api.sendDeliveredEvent(true, messages, mapThreadType(threadType));
     res.json({ ok: true });
   } catch (err) {
-    console.error(`[send-seen] error for threadId=${threadId}:`, err?.message);
-    res.status(200).json({ ok: false, reason: err?.message ?? 'send-seen failed' });
+    console.error(`[send-seen] error for threadId=${threadId}:`, errMsg(err));
+    res.status(200).json({ ok: false, reason: errMsg(err) ?? 'send-seen failed' });
   }
 });
 
@@ -654,9 +661,9 @@ router.post('/send-sticker', async (req, res) => {
     console.log(`[send-sticker] OK — messageId=${messageId ?? '-'}`);
     res.json(messageId ? { ok: true, messageId } : { ok: true });
   } catch (err) {
-    console.error(`[send-sticker] 500 — error for threadId=${threadId}: ${err?.message}`);
+    console.error(`[send-sticker] 500 — error for threadId=${threadId}: ${errMsg(err)}`);
     // Timeout → 504 để upstream phân loại TRANSIENT (ghi outbox + retry), còn lại giữ 500.
-    res.status(err?.isTimeout ? 504 : 500).json({ error: humanizeSendError(err), code: err?.name });
+    res.status(isTimeout(err) ? 504 : 500).json({ error: humanizeSendError(err), code: errName(err) });
   }
 });
 
@@ -669,8 +676,8 @@ const SUGGESTED_STICKER_LIMIT = 48;
  * Gom id sticker cho picker lúc chưa có keyword: quét lần lượt SEED_STICKER_KEYWORDS,
  * dedupe, dừng sớm khi đủ SUGGESTED_STICKER_LIMIT. Một keyword lỗi thì bỏ qua, không phá cả bộ.
  */
-async function collectSuggestedStickerIds(session) {
-  const seen = new Set();
+async function collectSuggestedStickerIds(session: ReadySession): Promise<number[]> {
+  const seen = new Set<number>();
   for (const kw of SEED_STICKER_KEYWORDS) {
     if (seen.size >= SUGGESTED_STICKER_LIMIT) break;
     try {
@@ -682,7 +689,7 @@ async function collectSuggestedStickerIds(session) {
         }
       }
     } catch (err) {
-      console.warn(`[stickers] seed keyword "${kw}" failed: ${err?.message}`);
+      console.warn(`[stickers] seed keyword "${kw}" failed: ${errMsg(err)}`);
     }
   }
   return [...seen];
@@ -697,7 +704,7 @@ async function collectSuggestedStickerIds(session) {
 // getStickers KHÔNG có cateId/URL → phải gọi getStickersDetail để lấy cateId (cần cho
 // send-sticker) + stickerUrl (FE render). Trả mảng { id, cateId, type, url }.
 // Handler tách riêng để mount ở CẢ /stickers (top-level) lẫn /messages/stickers.
-export async function stickersHandler(req, res) {
+export async function stickersHandler(req: Request, res: Response): Promise<unknown> {
   // Nhận keyword từ query (GET) hoặc body (POST).
   const keyword = req.query?.keyword ?? req.body?.keyword;
   const accountId = req.query?.accountId ?? req.body?.accountId;
@@ -723,7 +730,7 @@ export async function stickersHandler(req, res) {
       return res.json({ ok: true, stickers: [] });
     }
     // Lấy chi tiết để có cateId + URL ảnh. getStickersDetail bỏ qua id lỗi (allSettled).
-    const details = await withRetry(() => session.api.getStickersDetail(ids), 'stickers-detail');
+    const details = await withRetry(() => session.api.getStickersDetail(ids as number[]), 'stickers-detail');
     const stickers = (Array.isArray(details) ? details : []).map((d) => ({
       id: d.id,
       cateId: d.cateId,
@@ -734,8 +741,8 @@ export async function stickersHandler(req, res) {
     console.log(`[stickers] OK — ${stickers.length} stickers`);
     res.json({ ok: true, stickers });
   } catch (err) {
-    console.error(`[stickers] 500 — error for keyword=${keyword}: ${err?.message}`);
-    res.status(500).json({ error: err.message });
+    console.error(`[stickers] 500 — error for keyword=${keyword}: ${errMsg(err)}`);
+    res.status(500).json({ error: errMsg(err) });
   }
 }
 router.get('/stickers', stickersHandler);
@@ -764,7 +771,7 @@ router.post('/send-video', async (req, res) => {
   if (!session) return;
 
   try {
-    const options = {
+    const options: ZaloRaw = {
       videoUrl: String(fileUrl),
       thumbnailUrl: thumbUrl ? String(thumbUrl) : '',
     };
@@ -780,10 +787,10 @@ router.post('/send-video', async (req, res) => {
     console.log(`[send-video] OK — messageId=${messageId ?? '-'}`);
     res.json(messageId ? { ok: true, messageId } : { ok: true });
   } catch (err) {
-    console.error(`[send-video] 500 — error for threadId=${threadId}: ${err?.message}`);
-    console.error(err?.stack);
+    console.error(`[send-video] 500 — error for threadId=${threadId}: ${errMsg(err)}`);
+    console.error(errStack(err));
     // Timeout → 504 để upstream phân loại TRANSIENT (ghi outbox + retry), còn lại giữ 500.
-    res.status(err?.isTimeout ? 504 : 500).json({ error: humanizeSendError(err), code: err?.name });
+    res.status(isTimeout(err) ? 504 : 500).json({ error: humanizeSendError(err), code: errName(err) });
   }
 });
 
@@ -817,10 +824,10 @@ router.post('/send-voice', async (req, res) => {
     console.log(`[send-voice] OK — messageId=${messageId ?? '-'}`);
     res.json(messageId ? { ok: true, messageId } : { ok: true });
   } catch (err) {
-    console.error(`[send-voice] 500 — error for threadId=${threadId}: ${err?.message}`);
-    console.error(err?.stack);
+    console.error(`[send-voice] 500 — error for threadId=${threadId}: ${errMsg(err)}`);
+    console.error(errStack(err));
     // Timeout → 504 để upstream phân loại TRANSIENT (ghi outbox + retry), còn lại giữ 500.
-    res.status(err?.isTimeout ? 504 : 500).json({ error: humanizeSendError(err), code: err?.name });
+    res.status(isTimeout(err) ? 504 : 500).json({ error: humanizeSendError(err), code: errName(err) });
   }
 });
 

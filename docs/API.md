@@ -1,7 +1,7 @@
 # API Reference — zca-zalo-service
 
 Tài liệu đầy đủ cho toàn bộ API của service. Mọi mô tả dưới đây đọc thẳng từ mã nguồn
-(`src/routes/`, `src/listener.js`), không phải từ đặc tả mong muốn.
+(`src/routes/`, `src/listener.ts`), không phải từ đặc tả mong muốn.
 
 - **Base URL mặc định:** `http://localhost:3100`
 - **Content-Type:** `application/json` cho mọi request có body

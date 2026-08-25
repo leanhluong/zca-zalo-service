@@ -8,11 +8,23 @@ import { getGroupInfoCached, listGroupMembers } from './groupInfo.js';
 import { extractUserProfile } from './userProfile.js';
 import { markWsState, touchSession } from './sessionStore.js';
 import { healAccount, cancelHealing } from './sessionHealer.js';
+import { errMsg } from './errors.js';
+import type {
+  FriendEventPayload,
+  GroupEventPayload,
+  InboundPayload,
+  ReactionPayload,
+  ReceiptPayload,
+  RecallPayload,
+  TypingPayload,
+  ZaloApi,
+  ZaloRaw,
+} from './types.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Listener Zalo dùng CHUNG cho cả hai đường vào phiên:
-//   * sessionRestore.js — khôi phục từ cookies khi bridge khởi động
-//   * routes/sessions.js — vừa quét QR đăng nhập
+//   * sessionRestore.ts — khôi phục từ cookies khi bridge khởi động
+//   * routes/sessions.ts — vừa quét QR đăng nhập
 //
 // Trước đây mỗi đường tự chép một bản. Hai bản trôi khác nhau và mỗi bản thiếu một thứ:
 //   - đường QR thiếu 5/9 listener (typing, delivered, seen, group_event, friend_event)
@@ -33,7 +45,12 @@ const WEBHOOK_PATH = process.env.UPSTREAM_WEBHOOK_PATH ?? '/api/v1/webhook/zalo-
 // LƯU Ý (nợ kỹ thuật đã biết): không hàng đợi, không retry. Upstream restart /
 // deploy / 5xx đúng khoảnh khắc này = MẤT TIN VĨNH VIỄN vì Zalo không gửi lại như webhook
 // Facebook/Zalo OA. Khi làm hàng đợi bền thì sửa DUY NHẤT ở hàm này.
-async function push(path, accountId, payload, { tag, what, detail }) {
+async function push(
+  path: string,
+  accountId: string,
+  payload: unknown,
+  { tag, what, detail }: { tag: string; what: string; detail?: string },
+): Promise<void> {
   try {
     const resp = await fetch(`${UPSTREAM_BASE_URL}${WEBHOOK_PATH}${path}`, {
       method: 'POST',
@@ -46,29 +63,29 @@ async function push(path, accountId, payload, { tag, what, detail }) {
       console.log(`[${tag}] ${what} OK [${resp.status}] account=${accountId}${detail ? ' ' + detail : ''}`);
     }
   } catch (err) {
-    console.error(`[${tag}] ${what} error:`, err?.message);
+    console.error(`[${tag}] ${what} error:`, errMsg(err));
   }
 }
 
-const pushInbound = (tag, accountId, p) =>
+const pushInbound = (tag: string, accountId: string, p: InboundPayload) =>
   push('', accountId, p, { tag, what: 'pushInbound', detail: `msgId=${p.msgId} from=${p.senderId}` });
 
-const pushReaction = (tag, accountId, p) =>
+const pushReaction = (tag: string, accountId: string, p: ReactionPayload) =>
   push('/reaction', accountId, p, { tag, what: 'pushReaction', detail: `reactedMsg=${p.reactedMsgId} icon=${p.reactionType}` });
 
-const pushRecall = (tag, accountId, p) =>
+const pushRecall = (tag: string, accountId: string, p: RecallPayload) =>
   push('/recall', accountId, p, { tag, what: 'pushRecall', detail: `recalledMsg=${p.recalledMsgId} thread=${p.threadId}` });
 
-const pushTyping = (tag, accountId, p) =>
+const pushTyping = (tag: string, accountId: string, p: TypingPayload) =>
   push('/typing', accountId, p, { tag, what: 'pushTyping', detail: `thread=${p.threadId}` });
 
-const pushReceipt = (tag, accountId, p) =>
+const pushReceipt = (tag: string, accountId: string, p: ReceiptPayload) =>
   push('/receipt', accountId, p, { tag, what: 'pushReceipt', detail: `kind=${p.kind} thread=${p.threadId} msgs=${p.msgIds?.length ?? 0}` });
 
-const pushGroupEvent = (tag, accountId, p) =>
+const pushGroupEvent = (tag: string, accountId: string, p: GroupEventPayload) =>
   push('/group-event', accountId, p, { tag, what: 'pushGroupEvent', detail: `group=${p.groupId} type=${p.type}` });
 
-const pushFriendEvent = (tag, accountId, p) =>
+const pushFriendEvent = (tag: string, accountId: string, p: FriendEventPayload) =>
   push('/friend-event', accountId, p, { tag, what: 'pushFriendEvent', detail: `type=${p.type} user=${p.userId}` });
 
 /**
@@ -77,7 +94,11 @@ const pushFriendEvent = (tag, accountId, p) =>
  * @param accountId  own-id Zalo — khoá định danh phiên phía upstream
  * @param tag  nhãn log để phân biệt nguồn phiên: 'restore' (khôi phục) | 'qr' (vừa quét QR)
  */
-export function registerListener(api, accountId, { tag = 'zp' } = {}) {
+export function registerListener(
+  api: ZaloApi,
+  accountId: string,
+  { tag = 'zp' }: { tag?: string } = {},
+): void {
   const log = `${tag}-listener`;
   try {
     // ── Vòng đời WebSocket ────────────────────────────────────────────────────
@@ -86,32 +107,32 @@ export function registerListener(api, accountId, { tag = 'zp' } = {}) {
     //
     // zca-js phát 3 sự kiện: 'connected' (mở), 'disconnected' (đóng — LUÔN bắn), 'closed'
     // (đóng và KHÔNG còn thử lại nữa). Trước 20/08 bridge không nghe cái nào, nên phiên chết
-    // là chết câm: không log, không cảnh báo, không tự chữa — xem sessionHealer.js.
+    // là chết câm: không log, không cảnh báo, không tự chữa — xem sessionHealer.ts.
     api.listener.on('connected', () => {
       markWsState(accountId, { wsAlive: true, lastConnectedAt: Date.now(), lastEventAt: Date.now() });
       cancelHealing(accountId);
       console.log(`[${log}] WS connected — account=${accountId}`);
     });
 
-    api.listener.on('disconnected', (code, reason) => {
+    api.listener.on('disconnected', (code: number, reason: string) => {
       // Đóng nhưng zca-js CÓ THỂ đang tự nối lại (retryOnClose bên dưới) → chưa gọi healer.
       markWsState(accountId, { wsAlive: false, lastClosedAt: Date.now(), lastCloseCode: code ?? null, lastCloseReason: reason ?? null });
       console.warn(`[${log}] WS disconnected code=${code} reason="${reason ?? ''}" — account=${accountId}`);
     });
 
-    api.listener.on('closed', (code, reason) => {
+    api.listener.on('closed', (code: number, reason: string) => {
       // zca-js đã cạn lượt tự nối lại (hoặc mã đóng không nằm trong danh sách được retry).
       markWsState(accountId, { wsAlive: false, lastClosedAt: Date.now(), lastCloseCode: code ?? null, lastCloseReason: reason ?? null });
       console.error(`[${log}] WS CLOSED code=${code} reason="${reason ?? ''}" — account=${accountId}`);
       healAccount(accountId, { code, reason });
     });
 
-    api.listener.on('error', (err) => {
-      console.error(`[${log}] WS error — account=${accountId}:`, err?.message ?? err);
+    api.listener.on('error', (err: unknown) => {
+      console.error(`[${log}] WS error — account=${accountId}:`, errMsg(err) ?? err);
     });
 
     // retryOnClose: true — mặc định của zca-js là FALSE, tức WebSocket rớt một lần là listener
-    // ngừng hẳn. Đây là gốc của sự cố mất tin ngày 20/08 (chi tiết ở sessionHealer.js).
+    // ngừng hẳn. Đây là gốc của sự cố mất tin ngày 20/08 (chi tiết ở sessionHealer.ts).
     api.listener.start({ retryOnClose: true });
     markWsState(accountId, { wsAlive: true, lastConnectedAt: Date.now() });
 
@@ -119,15 +140,19 @@ export function registerListener(api, accountId, { tag = 'zp' } = {}) {
     // gói `emit` để mọi sự kiện Zalo đẩy lên (message, typing, delivered, seen, reaction, undo,
     // group_event, friend_event… kể cả sự kiện zca-js thêm sau này) đều cập nhật lastEventAt.
     // Ba sự kiện vòng đời không tính là "thở" — chúng có handler riêng ở trên.
-    const emit = api.listener.emit.bind(api.listener);
-    api.listener.emit = (event, ...args) => {
+    // Monkey-patch `emit` — kiểu của zca-js ở đây là generic theo tên sự kiện, không biểu
+    // diễn được một wrapper "nhận mọi sự kiện". Thu hẹp về một chữ ký chung, đúng ở runtime.
+    type AnyEmit = (event: string, ...args: unknown[]) => boolean;
+    const listenerAsEmitter = api.listener as unknown as { emit: AnyEmit };
+    const emit = listenerAsEmitter.emit.bind(api.listener) as AnyEmit;
+    listenerAsEmitter.emit = (event: string, ...args: unknown[]) => {
       if (event !== 'connected' && event !== 'disconnected' && event !== 'closed' && event !== 'error') {
         touchSession(accountId);
       }
       return emit(event, ...args);
     };
 
-    api.listener.on('message', async (msg) => {
+    api.listener.on('message', async (msg: ZaloRaw) => {
       if (!msg) return;
       console.log(`[${log}] raw: isSelf=${msg.isSelf} type=${msg.type} threadId=${msg.threadId} fromId=${msg.fromId} toId=${msg.toId}`);
       // ── Chẩn đoán loại tin (chỉ log tên field, không log giá trị) ──
@@ -210,7 +235,7 @@ export function registerListener(api, accountId, { tag = 'zp' } = {}) {
         // Zalo KHÔNG gửi kèm tên người nhận khi chính mình gửi đi (`toD`/`toName` rỗng) — nó cho
         // rằng mình đã biết mình nhắn cho ai — nên nhánh này là nguồn tên DUY NHẤT ở chiều gửi ra.
         // Trước 01/08 nó đọc `info.data` như mảng, mà getUserInfo trả object có khoá, nên luôn ra
-        // null và mọi liên hệ tạo từ tin gửi đi đều mang tên "Zalo 189727...". Xem src/userProfile.js.
+        // null và mọi liên hệ tạo từ tin gửi đi đều mang tên "Zalo 189727...". Xem src/userProfile.ts.
         if (!recipientName) {
           try {
             const info = await api.getUserInfo([recipientId]);
@@ -218,7 +243,7 @@ export function registerListener(api, accountId, { tag = 'zp' } = {}) {
             recipientName   = p.displayName;
             recipientAvatar = p.avatarUrl;
           } catch (e) {
-            console.warn(`[${log}] getUserInfo for recipient ${recipientId} failed:`, e?.message);
+            console.warn(`[${log}] getUserInfo for recipient ${recipientId} failed:`, errMsg(e));
           }
         }
 
@@ -248,7 +273,7 @@ export function registerListener(api, accountId, { tag = 'zp' } = {}) {
         let resolvedAvatar = msg.data?.avatar ?? msg.data?.avatarSm ?? null;
         // Thiếu → thử getUserInfo (chỉ hoạt động với bạn bè Zalo).
         // Chiều này ít lộ lỗi parse hơn vì Zalo đã nhúng sẵn `dName` trong payload tin đến, nên
-        // nhánh dự phòng hiếm khi chạy tới. Vẫn sửa cho khớp — xem src/userProfile.js.
+        // nhánh dự phòng hiếm khi chạy tới. Vẫn sửa cho khớp — xem src/userProfile.ts.
         if (!resolvedAvatar || !resolvedName) {
           try {
             const info = await api.getUserInfo([senderId]);
@@ -279,10 +304,10 @@ export function registerListener(api, accountId, { tag = 'zp' } = {}) {
 
     // Catch-up: lấy messages cũ gần nhất khi listener vừa start — gồm cả tin đã gửi từ điện thoại.
     // Xử lý qua cùng đường push, dedup bằng msgId ở upstream.
-    api.listener.on('old_messages', (msgs, threadType) => {
+    api.listener.on('old_messages', (msgs: ZaloRaw[], threadType: number) => {
       // 0 = ThreadType.User, 1 = ThreadType.Group — xử lý cả hai
       console.log(`[${log}] old_messages: ${msgs.length} msgs threadType=${threadType} for account ${accountId}`);
-      msgs.forEach(msg => {
+      msgs.forEach((msg: ZaloRaw) => {
         if (!msg) return;
         logDiag(msg);
         const { content, attachments, contactCard, location } = parseContentAndAttachments(msg);
@@ -300,7 +325,7 @@ export function registerListener(api, accountId, { tag = 'zp' } = {}) {
     });
 
     // Reaction đến từ Zalo → forward về upstream
-    api.listener.on('reaction', (r) => {
+    api.listener.on('reaction', (r: ZaloRaw) => {
       try {
         if (!r) return;
         const reactedMsgId = r.data?.content?.rMsg?.[0]?.gMsgID;
@@ -320,12 +345,12 @@ export function registerListener(api, accountId, { tag = 'zp' } = {}) {
           isSelf: r.isSelf,
         });
       } catch (err) {
-        console.error(`[${log}] reaction handler error:`, err?.message);
+        console.error(`[${log}] reaction handler error:`, errMsg(err));
       }
     });
 
     // Thu hồi tin (recall/undo) đến từ Zalo → forward về upstream
-    api.listener.on('undo', (u) => {
+    api.listener.on('undo', (u: ZaloRaw) => {
       try {
         if (!u) return;
         // globalMsgId của tin BỊ thu hồi (u.data.msgId là msgId của chính action undo)
@@ -341,14 +366,14 @@ export function registerListener(api, accountId, { tag = 'zp' } = {}) {
           threadId: u.threadId != null ? String(u.threadId) : null,
         });
       } catch (err) {
-        console.error(`[${log}] undo handler error:`, err?.message);
+        console.error(`[${log}] undo handler error:`, errMsg(err));
       }
     });
 
     // Typing indicator (khách đang soạn tin) → forward về upstream.
     // zca-js v2.1.2 UserTyping shape: { type, isSelf, threadId, data:{ uid, ts, isPC } }
     //   → threadId = data.uid (User) hoặc data.gid (Group). type: 0=User 1=Group.
-    api.listener.on('typing', (t) => {
+    api.listener.on('typing', (t: ZaloRaw) => {
       try {
         if (!t) return;
         const threadId = t.threadId ?? t.data?.uid ?? t.data?.gid;
@@ -363,14 +388,14 @@ export function registerListener(api, accountId, { tag = 'zp' } = {}) {
           isTyping: true,
         });
       } catch (err) {
-        console.error(`[${log}] typing handler error:`, err?.message);
+        console.error(`[${log}] typing handler error:`, errMsg(err));
       }
     });
 
     // Đã nhận (delivered) → forward về upstream.
     // zca-js v2.1.2 emit ARRAY của UserDeliveredMessage:
     //   { type, isSelf, threadId(=data.deliveredUids[0]), data:{ msgId, deliveredUids, seenUids, realMsgId, mSTs } }
-    api.listener.on('delivered_messages', (list) => {
+    api.listener.on('delivered_messages', (list: ZaloRaw) => {
       try {
         const arr = Array.isArray(list) ? list : [list];
         if (arr.length === 0) return;
@@ -396,14 +421,14 @@ export function registerListener(api, accountId, { tag = 'zp' } = {}) {
           });
         }
       } catch (err) {
-        console.error(`[${log}] delivered_messages handler error:`, err?.message);
+        console.error(`[${log}] delivered_messages handler error:`, errMsg(err));
       }
     });
 
     // Đã xem (seen) → forward về upstream.
     // zca-js v2.1.2 emit ARRAY của UserSeenMessage:
     //   { type, isSelf, threadId(=data.idTo), data:{ idTo, msgId, realMsgId } }
-    api.listener.on('seen_messages', (list) => {
+    api.listener.on('seen_messages', (list: ZaloRaw) => {
       try {
         const arr = Array.isArray(list) ? list : [list];
         if (arr.length === 0) return;
@@ -428,7 +453,7 @@ export function registerListener(api, accountId, { tag = 'zp' } = {}) {
           });
         }
       } catch (err) {
-        console.error(`[${log}] seen_messages handler error:`, err?.message);
+        console.error(`[${log}] seen_messages handler error:`, errMsg(err));
       }
     });
 
@@ -442,7 +467,7 @@ export function registerListener(api, accountId, { tag = 'zp' } = {}) {
     //     updateMembers: [{ id, dName, avatar, type }], avt/fullAvt, info, extraData, time, ... }
     //   Nhánh khác: join_request → data.uids[].
     // Best-effort: shape lệch (pin/topic/remind không có groupId) → log + bỏ qua.
-    api.listener.on('group_event', (ev) => {
+    api.listener.on('group_event', (ev: ZaloRaw) => {
       try {
         if (!ev) return;
         const data = ev.data ?? {};
@@ -457,11 +482,11 @@ export function registerListener(api, accountId, { tag = 'zp' } = {}) {
         let targetIds = [];
         if (Array.isArray(data.updateMembers)) {
           targetIds = data.updateMembers
-            .map((m) => (m && m.id != null ? String(m.id) : (typeof m === 'string' ? m : null)))
-            .filter((x) => x != null);
+            .map((m: ZaloRaw) => (m && m.id != null ? String(m.id) : (typeof m === 'string' ? m : null)))
+            .filter((x: unknown) => x != null);
         } else if (Array.isArray(data.uids)) {
           // join_request: danh sách uid xin vào nhóm.
-          targetIds = data.uids.map((u) => String(u)).filter((x) => x != null && x !== '');
+          targetIds = data.uids.map((u: unknown) => String(u)).filter((x: string) => x != null && x !== '');
         }
         pushGroupEvent(tag, accountId, {
           accountId,
@@ -477,7 +502,7 @@ export function registerListener(api, accountId, { tag = 'zp' } = {}) {
           timestamp: Date.now(),
         });
       } catch (err) {
-        console.error(`[${log}] group_event handler error:`, err?.message);
+        console.error(`[${log}] group_event handler error:`, errMsg(err));
       }
     });
 
@@ -489,7 +514,7 @@ export function registerListener(api, accountId, { tag = 'zp' } = {}) {
     //           data là STRING (uid) và threadId cũng = uid đó
     //   type=SEEN_FRIEND_REQUEST(5): data = string[] (danh sách uid đã xem)
     //   type=PIN_*(10,11)/UNKNOWN(12): shape khác — chỉ forward raw.
-    api.listener.on('friend_event', (ev) => {
+    api.listener.on('friend_event', (ev: ZaloRaw) => {
       try {
         if (!ev) return;
         const typeName = FriendEventType[ev.type] ?? String(ev.type ?? 'UNKNOWN');
@@ -520,18 +545,18 @@ export function registerListener(api, accountId, { tag = 'zp' } = {}) {
           timestamp: Date.now(),
         });
       } catch (err) {
-        console.error(`[${log}] friend_event handler error:`, err?.message);
+        console.error(`[${log}] friend_event handler error:`, errMsg(err));
       }
     });
 
     // Request old messages ngay sau khi listener ready
     setTimeout(() => {
       try { api.listener.requestOldMessages(0, null); } // 0 = ThreadType.User
-      catch (e) { console.error(`[${log}] requestOldMessages error:`, e?.message); }
+      catch (e) { console.error(`[${log}] requestOldMessages error:`, errMsg(e)); }
     }, 1000).unref?.();
 
     console.log(`[${tag}] Listener started for account ${accountId}`);
   } catch (err) {
-    console.error(`[${tag}] listener.start error for ${accountId}:`, err?.message);
+    console.error(`[${tag}] listener.start error for ${accountId}:`, errMsg(err));
   }
 }

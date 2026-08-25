@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { collectProfiles, extractUserProfile } from './userProfile.js';
 
-// Shape THẬT của zca-js getUserInfo — suy ra từ cách routes/friends.js đọc, đường duy nhất chạy
+// Shape THẬT của zca-js getUserInfo — suy ra từ cách routes/friends.ts đọc, đường duy nhất chạy
 // đúng trên prod (trả về 188 bạn kèm đủ tên).
 const realShape = {
   changed_profiles: {
@@ -14,7 +14,7 @@ const realShape = {
   },
 };
 
-// Ca đã hỏng trên prod: trước 01/08 listener.js đọc `info.data` như MẢNG, mà getUserInfo trả object
+// Ca đã hỏng trên prod: trước 01/08 listener.ts đọc `info.data` như MẢNG, mà getUserInfo trả object
 // có khoá ⇒ luôn null ⇒ mọi tin mình gửi đi mất tên người nhận ⇒ liên hệ mang tên "Zalo 824081...".
 test('đọc được shape thật của zca-js (object có khoá)', () => {
   assert.deepEqual(extractUserProfile(realShape, '8240816636307180606'), {

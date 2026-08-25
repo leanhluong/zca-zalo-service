@@ -1,5 +1,7 @@
 import express from 'express';
 import { getSessionByAccountId, listSessions } from '../sessionStore.js';
+import { errMsg } from '../errors.js';
+import type { ZaloRaw } from '../types.js';
 
 const router = express.Router();
 
@@ -7,8 +9,8 @@ const router = express.Router();
 // Lấy danh sách bạn bè Zalo của account — dùng để agent chủ động tạo conversation
 router.get('/:accountId', async (req, res) => {
   const { accountId } = req.params;
-  const limit = parseInt(req.query.limit ?? '200', 10);
-  const page  = parseInt(req.query.page  ?? '1',   10);
+  const limit = parseInt(String(req.query.limit ?? '200'), 10);
+  const page  = parseInt(String(req.query.page ?? '1'), 10);
 
   console.log(`[contacts] GET accountId=${accountId} page=${page} limit=${limit}`);
 
@@ -24,14 +26,14 @@ router.get('/:accountId', async (req, res) => {
   }
 
   try {
-    const result = await session.api.getAllFriends(limit, page);
+    const result: ZaloRaw = await session.api.getAllFriends(limit, page);
 
     // Log raw để debug cấu trúc response thực tế
     const rawStr = JSON.stringify(result ?? null);
     console.log(`[contacts] raw result type=${Array.isArray(result)?'array':typeof result} keys=${Object.keys(result??{}).join(',')} preview=${rawStr.substring(0, 200)}`);
 
     // utils.resolve có thể trả về array trực tiếp hoặc {data: [...]}
-    let friends = [];
+    let friends: ZaloRaw[] = [];
     if (Array.isArray(result)) {
       friends = result;
     } else if (Array.isArray(result?.data)) {
@@ -43,19 +45,19 @@ router.get('/:accountId', async (req, res) => {
     }
 
     const contacts = friends
-      .map(f => ({
+      .map((f: ZaloRaw) => ({
         userId:      String(f.uid ?? f.userId ?? f.user_id ?? ''),
         displayName: f.zaloName ?? f.displayName ?? f.dName ?? f.alias ?? f.name ?? null,
         avatarUrl:   f.avatar ?? f.avt ?? f.avatarUrl ?? null,
         phone:       f.phone ?? f.phoneNumber ?? null,
       }))
-      .filter(c => c.userId);
+      .filter((c) => c.userId);
 
     console.log(`[contacts] OK — ${contacts.length} friends for account ${accountId}`);
     res.json({ contacts, total: contacts.length, page, limit });
   } catch (err) {
-    console.error(`[contacts] error:`, err?.message);
-    res.status(500).json({ error: err.message });
+    console.error(`[contacts] error:`, errMsg(err));
+    res.status(500).json({ error: errMsg(err) });
   }
 });
 

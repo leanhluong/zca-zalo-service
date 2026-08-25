@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import type { HealerFn } from './sessionHealer.js';
 import { setHealer, healAccount, cancelHealing } from './sessionHealer.js';
 
 const ACC = '198202235016560549';
 
 /** Chờ tới khi cond() đúng hoặc hết hạn — healer chạy trong setTimeout nên phải đợi. */
-async function until(cond, timeoutMs = 1000) {
+async function until(cond: () => boolean, timeoutMs = 1000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (cond()) return true;
@@ -17,7 +18,7 @@ async function until(cond, timeoutMs = 1000) {
 test.beforeEach(() => cancelHealing(ACC));
 
 test('không có healer thì không lên lịch (không ném)', () => {
-  setHealer(null);
+  setHealer(null as unknown as HealerFn);
   assert.equal(healAccount(ACC, { code: 1006 }), false);
 });
 

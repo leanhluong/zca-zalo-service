@@ -5,18 +5,39 @@ import {
   getSessionByAccountId, deleteSession, adoptSession, listSessions,
   markWsState, touchSession,
 } from './sessionStore.js';
+import type { SessionRecord } from './types.js';
 
 const ACC = '627753538911129647';
 
+// Test gắn thêm `tag` để phân biệt các phiên trong cùng account — KHÔNG phải field của
+// production. Listener giả cũng chỉ có `stop()`: đủ cho việc đang kiểm, nên ép kiểu ở đây
+// thay vì dựng cả đối tượng Listener thật của zca-js.
+type TaggedSession = SessionRecord & { tag?: string };
+
+/** Lấy phiên và khẳng định nó tồn tại — test tự dựng nên null nghĩa là test sai. */
+function must(s: SessionRecord | null): TaggedSession {
+  assert.ok(s, 'phiên phải tồn tại');
+  return s as TaggedSession;
+}
+
 // Dựng 1 entry giống hệt đường login QR / restore: createSession rồi updateSession gắn accountId.
-function seed(key, accountId, { createdAt, tag } = {}) {
+function seed(
+  key: string,
+  accountId: string,
+  { createdAt, tag }: { createdAt?: number; tag?: string } = {},
+): string {
   createSession(key, null, null);
-  updateSession(key, { api: { listener: { stop() { stopped.push(tag ?? key); } } }, status: 'confirmed', accountId, tag });
+  updateSession(key, {
+    api: { listener: { stop() { stopped.push(tag ?? key); } } },
+    status: 'confirmed',
+    accountId,
+    tag,
+  } as unknown as Partial<SessionRecord>);
   if (createdAt != null) updateSession(key, { createdAt });
   return key;
 }
 
-let stopped = [];
+let stopped: string[] = [];
 test.beforeEach(() => {
   // Dọn phiên sót của test trước RỒI mới reset `stopped` — deleteSession cũng gọi listener.stop().
   for (const s of listSessions()) if (s.accountId) deleteSession(s.accountId);
@@ -29,7 +50,7 @@ test('getSessionByAccountId trả phiên MỚI NHẤT, không phải phiên đ�
 
   // Trước fix: hàm trả entry đầu tiên (phiên cũ đã bị Zalo vô hiệu hoá) → send-text 500
   // "zpw_sek bị thiếu hoặc không đúng" trong khi listener phiên mới vẫn nhận tin bình thường.
-  assert.equal(getSessionByAccountId(ACC).tag, 'moi');
+  assert.equal(must(getSessionByAccountId(ACC)).tag, 'moi');
 });
 
 test('deleteSession xoá TẤT CẢ phiên của account và dừng listener', () => {
@@ -41,7 +62,7 @@ test('deleteSession xoá TẤT CẢ phiên của account và dừng listener', (
 
   assert.equal(getSessionByAccountId(ACC), null);
   assert.deepEqual(stopped.sort(), ['a', 'b']);
-  assert.equal(getSessionByAccountId('999').tag, 'khac', 'không đụng account khác');
+  assert.equal(must(getSessionByAccountId('999')).tag, 'khac', 'không đụng account khác');
 });
 
 test('adoptSession giữ phiên vừa login, dọn mọi phiên cũ cùng account', () => {
@@ -54,7 +75,7 @@ test('adoptSession giữ phiên vừa login, dọn mọi phiên cũ cùng accoun
   assert.equal(dropped, 2);
   assert.deepEqual(stopped.sort(), ['cu-1', 'cu-2']);
   assert.ok(getSession('vua-qr'), 'phiên vừa login phải còn');
-  assert.equal(getSessionByAccountId(ACC).tag, 'vua-qr');
+  assert.equal(must(getSessionByAccountId(ACC)).tag, 'vua-qr');
 });
 
 test('adoptSession không đụng phiên của account khác', () => {
@@ -63,7 +84,7 @@ test('adoptSession không đụng phiên của account khác', () => {
 
   adoptSession('cua-toi', ACC);
 
-  assert.equal(getSessionByAccountId('999').tag, 'khac');
+  assert.equal(must(getSessionByAccountId('999')).tag, 'khac');
   assert.deepEqual(stopped, []);
 });
 
@@ -73,7 +94,7 @@ test('adoptSession không đụng phiên của account khác', () => {
 
 test('phiên mới tạo mặc định wsAlive=false, chưa có lastEventAt', () => {
   seed('moi', ACC, { createdAt: 1000 });
-  const s = getSessionByAccountId(ACC);
+  const s = must(getSessionByAccountId(ACC));
   assert.equal(s.wsAlive, false);
   assert.equal(s.lastEventAt, null);
 });
@@ -84,8 +105,8 @@ test('markWsState ghi mã đóng vào ĐÚNG phiên mới nhất của account',
 
   markWsState(ACC, { wsAlive: false, lastCloseCode: 3000, lastCloseReason: 'DuplicateConnection' });
 
-  assert.equal(getSessionByAccountId(ACC).lastCloseCode, 3000);
-  assert.equal(getSession('cu').lastCloseCode, null, 'phiên cũ không bị ghi đè');
+  assert.equal(must(getSessionByAccountId(ACC)).lastCloseCode, 3000);
+  assert.equal(must(getSession('cu')).lastCloseCode, null, 'phiên cũ không bị ghi đè');
 });
 
 test('touchSession đánh dấu phiên còn thở', () => {
@@ -94,9 +115,9 @@ test('touchSession đánh dấu phiên còn thở', () => {
 
   touchSession(ACC);
 
-  const s = getSessionByAccountId(ACC);
+  const s = must(getSessionByAccountId(ACC));
   assert.equal(s.wsAlive, true);
-  assert.ok(s.lastEventAt > 0, 'phải đóng dấu thời điểm nhận sự kiện');
+  assert.ok((s.lastEventAt ?? 0) > 0, 'phải đóng dấu thời điểm nhận sự kiện');
 });
 
 test('markWsState với account không tồn tại trả false, không ném', () => {

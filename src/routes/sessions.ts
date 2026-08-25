@@ -6,6 +6,8 @@ import { getCliMsgId } from '../msgIdCache.js';
 import { getGroupInfoCached, listAllGroups, listGroupMembers } from '../groupInfo.js';
 import { imageMetadataGetter } from '../imageMeta.js';
 import { registerListener } from '../listener.js';
+import { errMsg } from '../errors.js';
+import type { ZaloRaw } from '../types.js';
 
 // Tập giá trị code reaction hợp lệ (enum value của Reactions IS code string)
 const REACTION_CODES = new Set(Object.values(Reactions));
@@ -19,7 +21,7 @@ router.post('/init-qr', async (req, res) => {
     const qrToken = uuidv4().replace(/-/g, '');
     const zalo = new Zalo({ selfListen: true, imageMetadataGetter });
     // Use a Promise that resolves when QR code is ready
-    const qrReadyPromise = new Promise((resolve, reject) => {
+    const qrReadyPromise = new Promise<ZaloRaw>((resolve, reject) => {
       const timeout = setTimeout(() => reject(new Error('QR timeout: no QR code received within 30s')), 30000);
 
       // loginQR with callback — fires async events as QR progresses
@@ -50,7 +52,7 @@ router.post('/init-qr', async (req, res) => {
             updateSession(qrToken, { status: 'expired' });
           }
         } catch (err) {
-          console.error('loginQR callback error:', err?.message);
+          console.error('loginQR callback error:', errMsg(err));
           updateSession(qrToken, { status: 'failed' });
         }
       })
@@ -68,7 +70,7 @@ router.post('/init-qr', async (req, res) => {
             // Che số điện thoại trong log — chỉ giữ 4 số cuối để đối chiếu khi cần.
             console.log(`[login] fetchAccountInfo phone=${phone ? `***${String(phone).slice(-4)}` : 'null'} for account ${resolvedAccountId}`);
           } catch (err) {
-            console.warn('[login] fetchAccountInfo failed (best-effort):', err?.message);
+            console.warn('[login] fetchAccountInfo failed (best-effort):', errMsg(err));
           }
 
           updateSession(qrToken, {
@@ -84,11 +86,11 @@ router.post('/init-qr', async (req, res) => {
           // không đúng" trong khi listener mới vẫn nhận tin ⇒ inbound chạy, outbound chết.
           adoptSession(qrToken, resolvedAccountId);
 
-          // Listener + đường push về upstream dùng CHUNG với sessionRestore.js (listener.js).
+          // Listener + đường push về upstream dùng CHUNG với sessionRestore.ts (listener.ts).
           registerListener(api, resolvedAccountId, { tag: 'qr' });
         })
         .catch((err) => {
-          console.error('loginQR final error:', err?.message ?? err);
+          console.error('loginQR final error:', errMsg(err) ?? err);
           updateSession(qrToken, { status: 'error' });
         });
     });
@@ -106,8 +108,8 @@ router.post('/init-qr', async (req, res) => {
     console.log(`[init-qr] QR ready — qrToken=${qrToken} expiresIn=600`);
     res.json({ qrImageUrl, qrToken, expiresIn: 600 });
   } catch (err) {
-    console.error('[init-qr] error:', err?.message ?? err);
-    res.status(500).json({ error: err.message });
+    console.error('[init-qr] error:', errMsg(err) ?? err);
+    res.status(500).json({ error: errMsg(err) });
   }
 });
 
@@ -143,7 +145,7 @@ const PROBE_TIMEOUT_MS = 6000;
  * và mất 3 tin của khách, trong khi endpoint này vẫn trả healthy=true.
  *
  * Giờ có hai tầng bằng chứng:
- *   1. `wsAlive` + `lastEventAt` — trạng thái đường WebSocket do listener.js ghi lại.
+ *   1. `wsAlive` + `lastEventAt` — trạng thái đường WebSocket do listener.ts ghi lại.
  *   2. `probe` — gọi thật `keepAlive()` lên Zalo. Đây là thứ phát hiện được phiên bị Zalo ĐÁ
  *      (khách đăng nhập Zalo PC nơi khác): cookies chết thì lệnh này lỗi, dù WebSocket có thể
  *      chưa kịp đóng.
@@ -168,18 +170,20 @@ router.get('/:accountId/health', async (req, res) => {
 
   // Thăm dò thật — keepAlive là lệnh nhẹ nhất zca-js có (chỉ trả config version).
   let probeOk = false;
-  let probeError = null;
+  let probeError: string | null = null;
   try {
-    const probe = typeof session.api.keepAlive === 'function'
-      ? session.api.keepAlive()
-      : session.api.fetchAccountInfo();
+    // `registered` ở trên đã đảm bảo api != null; nói lại cho trình kiểm kiểu.
+    const api = session.api!;
+    const probe = typeof api.keepAlive === 'function'
+      ? api.keepAlive()
+      : api.fetchAccountInfo();
     await Promise.race([
       probe,
       new Promise((_, reject) => setTimeout(() => reject(new Error('probe timeout')), PROBE_TIMEOUT_MS)),
     ]);
     probeOk = true;
   } catch (err) {
-    probeError = err?.message ?? String(err);
+    probeError = errMsg(err) ?? String(err);
   }
 
   const lastEventAt = session.lastEventAt ?? null;
@@ -222,8 +226,8 @@ router.get('/:accountId/groups', async (req, res) => {
     console.log(`[groups] accountId=${accountId} → ${groups.length} group(s)`);
     res.json({ groups });
   } catch (err) {
-    console.error(`[groups] 500 — error listing groups for accountId=${accountId}:`, err?.message);
-    res.status(500).json({ error: err.message });
+    console.error(`[groups] 500 — error listing groups for accountId=${accountId}:`, errMsg(err));
+    res.status(500).json({ error: errMsg(err) });
   }
 });
 
@@ -257,8 +261,8 @@ router.get('/:accountId/groups/:groupId/members', async (req, res) => {
     console.log(`[members] accountId=${accountId} groupId=${groupId} → ${members.length} member(s), totalMember=${memberCount}, name=${groupName}`);
     res.json({ members, memberCount, groupAvatar, groupName });
   } catch (err) {
-    console.error(`[members] 500 — error listing members for accountId=${accountId} groupId=${groupId}:`, err?.message);
-    res.status(500).json({ error: err.message });
+    console.error(`[members] 500 — error listing members for accountId=${accountId} groupId=${groupId}:`, errMsg(err));
+    res.status(500).json({ error: errMsg(err) });
   }
 });
 
@@ -317,8 +321,8 @@ router.post('/:accountId/reaction', async (req, res) => {
     console.log(`[reaction] OK — reactionId=${reactionId}`);
     res.json({ reactionId });
   } catch (err) {
-    console.error(`[reaction] 500 — error reacting on msgId=${msgId}:`, err?.message);
-    res.status(500).json({ error: err.message });
+    console.error(`[reaction] 500 — error reacting on msgId=${msgId}:`, errMsg(err));
+    res.status(500).json({ error: errMsg(err) });
   }
 });
 

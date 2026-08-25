@@ -7,10 +7,38 @@
 //
 // Upstream nhận payload.attachments = [{ type, url, fileName, mimeType }].
 
+import type {
+  Attachment,
+  AttachmentType,
+  ContactCard,
+  GeoLocation,
+  Mention,
+  ParsedContent,
+  Quote,
+  ZaloMessage,
+  ZaloRaw,
+} from './types.js';
+
+/** Kết quả bóc nhật ký cuộc gọi — xem extractCallInfo. */
+interface CallInfo {
+  isCall: boolean;
+  video: boolean | null;
+  seconds: number | null;
+  missed: boolean | null;
+}
+
+/** Sản phẩm được share qua catalog Zalo — xem extractSharedProduct. */
+interface SharedProduct {
+  name: string | null;
+  link: string | null;
+  thumb: string | null;
+  price: string | null;
+}
+
 // Suy mimeType từ đuôi tên file (best-effort).
-function mimeFromFileName(fileName) {
+function mimeFromFileName(fileName: unknown): string {
   const ext = String(fileName ?? '').split('.').pop()?.toLowerCase() ?? '';
-  const map = {
+  const map: Record<string, string> = {
     jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', gif: 'image/gif',
     webp: 'image/webp', bmp: 'image/bmp',
     mp4: 'video/mp4', mov: 'video/quicktime', avi: 'video/x-msvideo', mkv: 'video/x-matroska',
@@ -32,13 +60,13 @@ function mimeFromFileName(fileName) {
 // `stickerUrl`, nên dựng chuỗi từ `id` thay vì gọi API: giữ parser THUẦN + ĐỒNG BỘ (cả 3 đường
 // ingest — live listener, session restore, /sync — dùng chung hàm này).
 const STICKER_CDN_URL = 'https://zalo-api.zadn.vn/api/emoticon/sticker/webpc';
-function stickerImageUrl(stickerId) {
+function stickerImageUrl(stickerId: string | number): string {
   return `${STICKER_CDN_URL}?eid=${stickerId}`;
 }
 
 // Map msgType của zca-js → { type, fileName, mimeType } mặc định cho media.
 // type ∈ image | file | audio | video.
-function mediaMetaFromMsgType(msgType, raw) {
+function mediaMetaFromMsgType(msgType: string, raw: ZaloRaw): { type: AttachmentType; fileName: string; mimeType: string } {
   switch (msgType) {
     case 'chat.photo':
     case 'chat.photo.reply':
@@ -73,7 +101,7 @@ const QUOTE_SNIPPET_MAX = 200;
 // (nhật ký cuộc gọi, thông báo…). KHÔNG phải chữ để hiển thị — lọt ra inbox là lộ kỹ thuật
 // ("[Danh thiếp] sendBubbleMessage" mà khách đã gặp).
 const ZALO_INTERNAL_LABELS = new Set(['sendbubblemessage', 'sendbubble', 'recommened', 'recommended']);
-function isZaloInternalLabel(v) {
+function isZaloInternalLabel(v: unknown): boolean {
   return typeof v === 'string' && ZALO_INTERNAL_LABELS.has(v.trim().toLowerCase());
 }
 
@@ -92,10 +120,10 @@ function isZaloInternalLabel(v) {
  *
  * @returns {{ name: string|null, phone: string|null, avatarUrl?: string } | null}
  */
-function extractContactCard(raw) {
+function extractContactCard(raw: ZaloRaw): ContactCard | null {
   if (!raw || typeof raw !== 'object') return null;
 
-  const str = (v) =>
+  const str = (v: unknown): string | null =>
     typeof v === 'string' && v.length > 0 && !isZaloInternalLabel(v) ? v : null;
 
   const name = str(raw.name) ?? str(raw.caption) ?? str(raw.title) ?? str(raw.dName) ?? null;
@@ -105,7 +133,7 @@ function extractContactCard(raw) {
   // Không có định danh nào → không phải danh thiếp mình hiểu được.
   if (!name && !phone) return null;
 
-  const card = { name, phone };
+  const card: ContactCard = { name, phone };
   if (avatarUrl) card.avatarUrl = avatarUrl;
   return card;
 }
@@ -127,7 +155,7 @@ function extractContactCard(raw) {
  *
  * @returns {{ isCall: boolean, video: boolean|null, seconds: number|null, missed: boolean|null }|null}
  */
-function extractCallInfo(raw) {
+function extractCallInfo(raw: ZaloRaw): CallInfo | null {
   if (!raw || typeof raw !== 'object') return null;
 
   // `params` thường là CHUỖI JSON; vài bản trả sẵn object.
@@ -139,17 +167,17 @@ function extractCallInfo(raw) {
 
   // Gộp field cấp ngoài + trong params để dò 1 lần (params ưu tiên vì cụ thể hơn).
   const bag = { ...(raw || {}), ...(params || {}) };
-  const lower = {};
+  const lower: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(bag)) lower[String(k).toLowerCase()] = v;
 
-  const pick = (...keys) => {
+  const pick = (...keys: string[]): unknown => {
     for (const k of keys) {
       const v = lower[k];
       if (v !== undefined && v !== null && v !== '') return v;
     }
     return null;
   };
-  const num = (v) => {
+  const num = (v: unknown): number | null => {
     if (v === null) return null;
     const n = Number(v);
     return Number.isFinite(n) ? n : null;
@@ -193,12 +221,12 @@ function extractCallInfo(raw) {
 }
 
 // "1 phút 5 giây" / "5 giây" / "1 giờ 2 phút" — bỏ đơn vị bằng 0 cho gọn.
-function formatCallDuration(seconds) {
+function formatCallDuration(seconds: number): string {
   const total = Math.max(0, Math.round(seconds));
   const h = Math.floor(total / 3600);
   const m = Math.floor((total % 3600) / 60);
   const s = total % 60;
-  const parts = [];
+  const parts: string[] = [];
   if (h > 0) parts.push(`${h} giờ`);
   if (m > 0) parts.push(`${m} phút`);
   if (s > 0 || parts.length === 0) parts.push(`${s} giây`);
@@ -209,7 +237,7 @@ function formatCallDuration(seconds) {
  * Dựng chuỗi hiển thị cho nhật ký cuộc gọi.
  * `isSelf = true` → chính tài khoản mình gọi đi (nhỡ = đối phương không bắt máy).
  */
-function buildCallContent(info, isSelf) {
+function buildCallContent(info: CallInfo, isSelf: boolean): string {
   const label = info.video === true ? '[Cuộc gọi video]' : info.video === false ? '[Cuộc gọi thoại]' : '[Cuộc gọi]';
   const direction = isSelf ? 'Gọi đi' : 'Gọi đến';
 
@@ -239,15 +267,15 @@ function buildCallContent(info, isSelf) {
  *
  * @returns {{ lat: number, lng: number, address?: string } | null}
  */
-function extractLocation(raw) {
+function extractLocation(raw: ZaloRaw): GeoLocation | null {
   if (!raw || typeof raw !== 'object') return null;
 
-  const num = (v) => {
+  const num = (v: unknown): number | null => {
     if (v == null || v === '') return null;
     const n = Number(v);
     return Number.isFinite(n) ? n : null;
   };
-  const str = (v) => (typeof v === 'string' && v.length > 0 ? v : null);
+  const str = (v: unknown): string | null => (typeof v === 'string' && v.length > 0 ? v : null);
 
   const lat = num(raw.lat) ?? num(raw.latitude);
   const lng = num(raw.lng) ?? num(raw.lon) ?? num(raw.long) ?? num(raw.longitude);
@@ -255,7 +283,7 @@ function extractLocation(raw) {
 
   const address = str(raw.address) ?? str(raw.desc) ?? str(raw.title) ?? str(raw.name) ?? null;
 
-  const loc = { lat, lng };
+  const loc: GeoLocation = { lat, lng };
   if (address) loc.address = address;
   return loc;
 }
@@ -277,13 +305,13 @@ function extractLocation(raw) {
  *
  * @returns {{ name: string|null, link: string|null, thumb: string|null, price: string|null } | null}
  */
-function extractSharedProduct(raw) {
+function extractSharedProduct(raw: ZaloRaw): SharedProduct | null {
   if (!raw || typeof raw !== 'object') return null;
 
-  const str = (v) => (typeof v === 'string' && v.trim().length > 0 ? v.trim() : null);
-  const isUrl = (v) => typeof v === 'string' && /^https?:\/\//i.test(v.trim());
-  const urlStr = (v) => (isUrl(v) ? v.trim() : null);
-  const firstPhoto = (v) =>
+  const str = (v: unknown): string | null => (typeof v === 'string' && v.trim().length > 0 ? v.trim() : null);
+  const isUrl = (v: unknown): v is string => typeof v === 'string' && /^https?:\/\//i.test(v.trim());
+  const urlStr = (v: unknown): string | null => (isUrl(v) ? v.trim() : null);
+  const firstPhoto = (v: unknown): string | null =>
     Array.isArray(v) ? (v.map(str).find(Boolean) ?? null) : null;
 
   // `params` có thể là object hoặc chuỗi JSON → parse để tìm field nằm sâu.
@@ -350,7 +378,7 @@ function extractSharedProduct(raw) {
  *
  * @returns {{ replyToMsgId: string, replyToSnippet: string|null, replyToSenderName: string|null } | null}
  */
-export function extractQuote(msg) {
+export function extractQuote(msg: ZaloMessage): Quote | null {
   try {
     const quote = msg?.data?.quote;
     if (!quote || typeof quote !== 'object') return null;
@@ -362,7 +390,7 @@ export function extractQuote(msg) {
     if (!replyToMsgId || replyToMsgId === 'undefined' || replyToMsgId === 'null') return null;
 
     // Text tin gốc — có thể là object (quote 1 media) → best-effort bỏ qua.
-    let replyToSnippet = null;
+    let replyToSnippet: string | null = null;
     if (typeof quote.msg === 'string' && quote.msg.length > 0) {
       replyToSnippet = quote.msg.slice(0, QUOTE_SNIPPET_MAX);
     }
@@ -392,19 +420,19 @@ export function extractQuote(msg) {
  *
  * @returns {Array<{uid: string, offset: number, length: number, name?: string}> | null}
  */
-export function extractMentions(msg) {
+export function extractMentions(msg: ZaloMessage): Mention[] | null {
   try {
     const raw = msg?.data?.mentions;
     if (!Array.isArray(raw) || raw.length === 0) return null;
 
-    const mentions = [];
+    const mentions: Mention[] = [];
     for (const m of raw) {
       if (!m || typeof m !== 'object') continue;
       const uid = m.uid != null ? String(m.uid) : null;
       if (!uid) continue;
       const offset = Number(m.pos);
       const length = Number(m.len);
-      const entry = {
+      const entry: Mention = {
         uid,
         offset: Number.isFinite(offset) ? offset : 0,
         length: Number.isFinite(length) ? length : 0,
@@ -432,7 +460,7 @@ export function extractMentions(msg) {
  * @returns {{ content: string, attachments: Array<{type,url,fileName,mimeType}>,
  *             contactCard?: {name,phone,avatarUrl?}, location?: {lat,lng,address?} }}
  */
-export function parseContentAndAttachments(msg) {
+export function parseContentAndAttachments(msg: ZaloMessage): ParsedContent {
   const raw = msg?.data?.content ?? msg?.content;
   const msgType = msg?.data?.msgType;
 
@@ -544,7 +572,7 @@ export function parseContentAndAttachments(msg) {
         const content = product.link ? `${label} — ${product.link}` : label;
         // Có ảnh → kèm attachment image để khung chat hiện ảnh (giống nhánh media),
         // vẫn GIỮ content mô tả text ở trên.
-        const attachments = product.thumb
+        const attachments: Attachment[] = product.thumb
           ? [{ type: 'image', url: String(product.thumb), fileName: 'product.jpg', mimeType: 'image/jpeg' }]
           : [];
         return { content, attachments };
@@ -570,7 +598,7 @@ export function parseContentAndAttachments(msg) {
     // Zalo phát lại (echo) với content object ở dạng SEND-SIDE — KHÔNG có href/thumb
     // (chỉ có photoId/rawUrl/... nội bộ). Trước đây rơi vào "[Nội dung không hỗ trợ]".
     // Nhận diện theo msgType để gắn nhãn media đúng thay vì báo không hỗ trợ.
-    const mediaLabelByType = {
+    const mediaLabelByType: Record<string, string> = {
       'chat.photo': '[Hình ảnh]',
       'chat.photo.reply': '[Hình ảnh]',
       'chat.sticker': '[Nhãn dán]',

@@ -1,4 +1,4 @@
-// groupInfo.js — Helper lấy thông tin nhóm Zalo qua zca-js@2.1.2
+// groupInfo.ts — Helper lấy thông tin nhóm Zalo qua zca-js@2.1.2
 //
 // Shape THẬT của zca-js@2.1.2 (đã verify từ dist/apis/getGroupInfo.js):
 //   api.getGroupInfo(groupId | groupId[]) → {
@@ -14,13 +14,15 @@
 //   }
 // → Muốn tên/avatar phải feed các groupId này vào getGroupInfo.
 
+import type { GroupFields, GroupMember, GroupSummary, ZaloApi, ZaloRaw } from './types.js';
+import { errMsg } from './errors.js';
+
 // Cache in-memory theo groupId để không gọi getGroupInfo lặp mỗi tin (giảm rate-limit).
-// Map<groupId, { name, avatar, memberCount, ts }>
-const groupInfoCache = new Map();
+const groupInfoCache = new Map<string, GroupFields & { ts: number }>();
 const GROUP_INFO_TTL_MS = 10 * 60 * 1000; // 10 phút
 
 // Trích đúng field từ một entry GroupInfo (shape zca-js@2.1.2)
-function extractGroupFields(g) {
+function extractGroupFields(g: ZaloRaw): GroupFields | null {
   if (!g) return null;
   return {
     name: g.name ?? g.groupName ?? g.fullName ?? null,
@@ -31,15 +33,15 @@ function extractGroupFields(g) {
 
 // Đọc gridInfoMap từ response getGroupInfo — hỗ trợ cả shape mới (top-level)
 // lẫn shape cũ (.data.gridInfoMap) để an toàn trước/sau nâng lib.
-function resolveGridInfoMap(resp) {
+function resolveGridInfoMap(resp: ZaloRaw): Record<string, ZaloRaw> | null {
   return resp?.gridInfoMap ?? resp?.data?.gridInfoMap ?? null;
 }
 
-/**
- * Lấy tên/avatar/số thành viên của 1 nhóm — cache theo groupId.
- * @returns {Promise<{name, avatar, memberCount} | null>}
- */
-export async function getGroupInfoCached(api, groupId) {
+/** Lấy tên/avatar/số thành viên của 1 nhóm — cache theo groupId. */
+export async function getGroupInfoCached(
+  api: ZaloApi | null | undefined,
+  groupId: string | number,
+): Promise<GroupFields | null> {
   const key = String(groupId);
   if (!api || !key) return null;
 
@@ -59,7 +61,7 @@ export async function getGroupInfoCached(api, groupId) {
     }
     return fields;
   } catch (err) {
-    console.warn(`[groupInfo] getGroupInfo error for groupId=${key}:`, err?.message);
+    console.warn(`[groupInfo] getGroupInfo error for groupId=${key}:`, errMsg(err));
     return null;
   }
 }
@@ -67,12 +69,11 @@ export async function getGroupInfoCached(api, groupId) {
 /**
  * Liệt kê tất cả nhóm của account: getAllGroups() → danh sách groupId,
  * rồi enrich qua getGroupInfo (batch) để có tên/avatar/số thành viên.
- * @returns {Promise<Array<{ groupId, name, avatar, memberCount }>>}
  */
-export async function listAllGroups(api) {
+export async function listAllGroups(api: ZaloApi | null | undefined): Promise<GroupSummary[]> {
   if (!api) return [];
 
-  const allResp = await api.getAllGroups();
+  const allResp: ZaloRaw = await api.getAllGroups();
   const gridVerMap = allResp?.gridVerMap ?? allResp?.data?.gridVerMap ?? {};
   const groupIds = Object.keys(gridVerMap);
   if (groupIds.length === 0) return [];
@@ -80,7 +81,7 @@ export async function listAllGroups(api) {
   // Enrich theo LÔ — Zalo từ chối getGroupInfo với mảng quá lớn (vd 900+ nhóm 1 lần → null).
   // Chunk 50 id/lần + gộp gridInfoMap; delay nhỏ giữa lô để tránh rate-limit.
   const CHUNK = 50;
-  const gridInfoMap = {};
+  const gridInfoMap: Record<string, ZaloRaw> = {};
   for (let i = 0; i < groupIds.length; i += CHUNK) {
     const batch = groupIds.slice(i, i + CHUNK);
     try {
@@ -88,7 +89,7 @@ export async function listAllGroups(api) {
       const map = resolveGridInfoMap(infoResp);
       if (map) Object.assign(gridInfoMap, map);
     } catch (err) {
-      console.warn(`[groupInfo] listAllGroups getGroupInfo chunk ${i} error:`, err?.message);
+      console.warn(`[groupInfo] listAllGroups getGroupInfo chunk ${i} error:`, errMsg(err));
     }
     if (i + CHUNK < groupIds.length) await new Promise((r) => setTimeout(r, 300));
   }
@@ -114,12 +115,12 @@ export async function listAllGroups(api) {
 //     profiles: { [memberId]: { displayName, zaloName, avatar, id, globalId, ... } },
 //     unchangeds_profile: []
 //   }
-function resolveMemberProfiles(resp) {
+function resolveMemberProfiles(resp: ZaloRaw): Record<string, ZaloRaw> | null {
   return resp?.profiles ?? resp?.data?.profiles ?? null;
 }
 
 // memVerList entry có dạng "uid_version" (vd "12345_3") → tách lấy uid.
-function stripMemVer(v) {
+function stripMemVer(v: unknown): string {
   const s = String(v);
   const i = s.indexOf('_');
   return i > 0 ? s.slice(0, i) : s;
@@ -136,14 +137,15 @@ function stripMemVer(v) {
  * Ưu tiên `currentMems` vì đã kèm avatar → dựng collage nhóm KHÔNG cần gọi thêm.
  * Chỉ khi currentMems rỗng mới rơi xuống memberIds/memVerList + getGroupMembersInfo.
  * (Bản cũ chỉ đọc memberIds → v2.1.2 trả rỗng → members = [] → không có avatar để ghép.)
- *
- * @returns {Promise<Array<{ uid: string, name: string|null, avatar: string|null }>>}
  */
-export async function listGroupMembers(api, groupId) {
+export async function listGroupMembers(
+  api: ZaloApi | null | undefined,
+  groupId: string | number,
+): Promise<GroupMember[]> {
   const key = String(groupId);
   if (!api || !key) return [];
 
-  const infoResp = await api.getGroupInfo([key]);
+  const infoResp: ZaloRaw = await api.getGroupInfo([key]);
   const gridInfoMap = resolveGridInfoMap(infoResp);
   const entry = gridInfoMap?.[key] ?? (gridInfoMap ? Object.values(gridInfoMap)[0] : null);
   if (!entry) return [];
@@ -159,7 +161,7 @@ export async function listGroupMembers(api, groupId) {
 
   // 1) currentMems đã kèm avatar → dùng trực tiếp, không cần getGroupMembersInfo.
   if (currentMems.length > 0) {
-    return currentMems.map((m) => ({
+    return currentMems.map((m: ZaloRaw) => ({
       uid: String(m.id),
       name: m.zaloName ?? m.dName ?? null,
       avatar: m.avatar ?? m.avatar_25 ?? null,
@@ -170,15 +172,15 @@ export async function listGroupMembers(api, groupId) {
   const uids = memberIds.length > 0 ? memberIds : memVerIds;
   if (uids.length === 0) return [];
 
-  let profiles = null;
+  let profiles: Record<string, ZaloRaw> | null = null;
   try {
     const membersResp = await api.getGroupMembersInfo(uids);
     profiles = resolveMemberProfiles(membersResp);
   } catch (err) {
-    console.warn(`[groupInfo] getGroupMembersInfo error for groupId=${key}:`, err?.message);
+    console.warn(`[groupInfo] getGroupMembersInfo error for groupId=${key}:`, errMsg(err));
   }
 
-  return uids.map((uid) => {
+  return uids.map((uid: string) => {
     // profiles có thể keyed theo uid hoặc uid_0 (theo pversion) → thử cả hai
     const p = profiles?.[uid] ?? profiles?.[`${uid}_0`] ?? null;
     return {

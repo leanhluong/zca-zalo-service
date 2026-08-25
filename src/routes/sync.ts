@@ -3,6 +3,8 @@ import { ThreadType } from 'zca-js';
 import { getSessionByAccountId, listSessions } from '../sessionStore.js';
 import { parseContentAndAttachments, extractQuote, extractMentions } from '../msgContent.js';
 import { getGroupInfoCached, listGroupMembers } from '../groupInfo.js';
+import { errMsg } from '../errors.js';
+import type { ZaloApi, ZaloRaw } from '../types.js';
 
 const UPSTREAM_BASE_URL = process.env.UPSTREAM_BASE_URL ?? 'http://localhost:5000';
 const WEBHOOK_PATH = process.env.UPSTREAM_WEBHOOK_PATH ?? '/api/v1/webhook/zalo-personal';
@@ -10,10 +12,15 @@ const SYNC_TIMEOUT_MS = 15000;  // 15s timeout chờ Zalo trả lời
 
 const router = express.Router();
 
-async function pushMessageToUpstream(accountId, msg, threadType = ThreadType.User, api = null) {
+async function pushMessageToUpstream(
+  accountId: string,
+  msg: ZaloRaw,
+  threadType: ThreadType = ThreadType.User,
+  api: ZaloApi | null = null,
+): Promise<boolean> {
   try {
     // CHỈ log TÊN field, KHÔNG log giá trị — nội dung tin khách là dữ liệu nhạy cảm
-    // (cùng quy tắc với diagLog.js).
+    // (cùng quy tắc với diagLog.ts).
     const dataKeys = msg.data ? Object.keys(msg.data) : [];
     console.log(`[sync] raw msg fields: type=${msg.type} isSelf=${msg.isSelf} threadId=${msg.threadId} msgId=${msg.msgId ?? msg.data?.msgId} dataKeys=[${dataKeys.join(',')}]`);
 
@@ -23,7 +30,7 @@ async function pushMessageToUpstream(accountId, msg, threadType = ThreadType.Use
     const quote = extractQuote(msg);
     const mentions = extractMentions(msg);
 
-    // ── Detect nhóm PER-MESSAGE (giống live listener sessions.js: msg.type === 1 = ThreadType.Group) ──
+    // ── Detect nhóm PER-MESSAGE (giống live listener sessions.ts: msg.type === 1 = ThreadType.Group) ──
     // KHÔNG dựa threadType cấp-REQUEST: history có thể trộn tin nhóm + 1-1, nếu ép theo request
     // thì tin nhóm bị coi là 1-1 → mất tên người gửi trong nhóm.
     //   1) Tín hiệu chính: msg.type === 1 (giống live listener).
@@ -37,9 +44,9 @@ async function pushMessageToUpstream(accountId, msg, threadType = ThreadType.Use
     }
     if (!isGroup && threadType === ThreadType.Group) isGroup = true;
 
-    let payload;
+    let payload: ZaloRaw;
     if (isGroup) {
-      // ── Tin nhóm — payload kèm field nhóm giống live listener (sessions.js) ──
+      // ── Tin nhóm — payload kèm field nhóm giống live listener (sessions.ts) ──
       const groupId = String(msg.threadId ?? '');
       if (!groupId || (!content && attachments.length === 0)) {
         console.warn(`[sync] SKIP group — groupId="${groupId}" contentLen=${content.length} attachments=${attachments.length} (empty)`);
@@ -60,7 +67,7 @@ async function pushMessageToUpstream(accountId, msg, threadType = ThreadType.Use
           const found = members.find((m) => String(m.uid) === memberSenderId);
           memberSenderName = found?.name ?? null;
         } catch (e) {
-          console.warn(`[sync] listGroupMembers fallback error groupId=${groupId}:`, e?.message);
+          console.warn(`[sync] listGroupMembers fallback error groupId=${groupId}:`, errMsg(e));
         }
       }
 
@@ -105,7 +112,7 @@ async function pushMessageToUpstream(accountId, msg, threadType = ThreadType.Use
     });
     return resp.ok;
   } catch (err) {
-    console.error(`[sync] push error:`, err?.message);
+    console.error(`[sync] push error:`, errMsg(err));
     return false;
   }
 }
@@ -134,23 +141,24 @@ router.post('/:accountId', async (req, res) => {
 
   try {
     // Chờ Zalo trả old_messages qua WebSocket
-    const messages = await new Promise((resolve) => {
+    const api = session.api;
+    const messages: ZaloRaw[] = await new Promise((resolve) => {
       const timeout = setTimeout(() => {
         console.warn(`[sync] timeout waiting for old_messages`);
         resolve([]);
       }, SYNC_TIMEOUT_MS);
 
       // One-time listener — chỉ lắng nghe 1 response rồi tháo ra
-      const handler = (msgs, respThreadType) => {
+      const handler = (msgs: ZaloRaw[], respThreadType: number) => {
         if (respThreadType !== mappedThreadType) return;
         clearTimeout(timeout);
-        session.api.listener.off('old_messages', handler);
+        api.listener.off('old_messages', handler);
         console.log(`[sync] received ${msgs.length} old messages`);
         resolve(msgs);
       };
 
-      session.api.listener.on('old_messages', handler);
-      session.api.listener.requestOldMessages(mappedThreadType, lastMsgId);
+      api.listener.on('old_messages', handler);
+      api.listener.requestOldMessages(mappedThreadType, lastMsgId);
     });
 
     if (messages.length === 0) {
@@ -177,8 +185,8 @@ router.post('/:accountId', async (req, res) => {
       hasMore: messages.length > 0,  // còn trang tiếp nếu có message
     });
   } catch (err) {
-    console.error(`[sync] error:`, err?.message);
-    res.status(500).json({ error: err.message });
+    console.error(`[sync] error:`, errMsg(err));
+    res.status(500).json({ error: errMsg(err) });
   }
 });
 
@@ -195,7 +203,7 @@ router.post('/:accountId', async (req, res) => {
 // GIỚI HẠN CÒN LẠI (nói thẳng, đừng để người sau tưởng đã xong): zca-js 2.1.2 KHÔNG có API đọc
 // lịch sử chat 1-1 (`getGroupChatHistory` chỉ nhận groupId; danh sách API đầy đủ không có
 // getUserChatHistory hay tương đương). Tin 1-1 mất trong lúc phiên chết là mất thật — cách duy
-// nhất là ĐỪNG ĐỂ MẤT, tức phần retryOnClose + tự chữa ở listener.js/sessionHealer.js.
+// nhất là ĐỪNG ĐỂ MẤT, tức phần retryOnClose + tự chữa ở listener.ts/sessionHealer.ts.
 router.post('/:accountId/group/:groupId', async (req, res) => {
   const { accountId, groupId } = req.params;
   const count = Number(req.body?.count) > 0 ? Math.min(Number(req.body.count), 500) : 50;
@@ -220,8 +228,8 @@ router.post('/:accountId/group/:groupId', async (req, res) => {
     console.log(`[sync-group] pushed ${pushed}/${msgs.length} for group ${groupId}`);
     res.json({ synced: pushed, total: msgs.length, hasMore: (history?.more ?? 0) > 0 });
   } catch (err) {
-    console.error(`[sync-group] error groupId=${groupId}:`, err?.message);
-    res.status(500).json({ error: err.message });
+    console.error(`[sync-group] error groupId=${groupId}:`, errMsg(err));
+    res.status(500).json({ error: errMsg(err) });
   }
 });
 

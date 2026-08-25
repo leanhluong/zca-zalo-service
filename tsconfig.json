@@ -1,0 +1,39 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023"],
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+
+    "rootDir": "src",
+    "outDir": "dist",
+
+    // zca-js khai `export * from "./dist"` trong index.d.ts — THIẾU đuôi file, nên
+    // moduleResolution NodeNext không resolve được và mọi named import từ 'zca-js'
+    // báo "has no exported member". Trỏ thẳng vào file types thật để vượt qua.
+    // Bỏ dòng này khi zca-js sửa typings (kiểm bằng cách xoá rồi chạy `npm run typecheck`).
+    "baseUrl": ".",
+    "paths": {
+      "zca-js": ["./node_modules/zca-js/dist/index.d.ts"]
+    },
+
+    // ── strict vừa ──────────────────────────────────────────────────────────
+    // Bật strict cho code mình viết. Dữ liệu từ Zalo (payload zca-js) được khai
+    // `any`/`unknown` TƯỜNG MINH ở src/types.ts — Zalo đổi shape thường xuyên nên
+    // mô hình hoá cứng sẽ sai, mà sai kiểu ở đây thì tệ hơn không có kiểu.
+    "strict": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "forceConsistentCasingInFileNames": true,
+
+    // Không bật: exactOptionalPropertyTypes, noUncheckedIndexedAccess —
+    // chúng đòi viết lại nhiều chỗ đọc payload Zalo mà không bắt được lỗi thật.
+
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "sourceMap": true,
+    "declaration": false
+  },
+  "include": ["src/**/*.ts"]
+}

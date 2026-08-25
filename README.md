@@ -12,6 +12,8 @@ Zalo  ⇄  zca-zalo-service  ⇄  upstream (hệ thống của bạn)
           └── REST in:     gửi tin, nhóm, bạn bè, đồng bộ lịch sử
 ```
 
+Viết bằng **TypeScript** (strict), biên dịch bằng `tsc` sang `dist/`.
+
 ## Yêu cầu
 
 - Node.js 20+
@@ -22,10 +24,33 @@ Zalo  ⇄  zca-zalo-service  ⇄  upstream (hệ thống của bạn)
 ```bash
 npm ci
 cp .env.example .env      # rồi điền UPSTREAM_BASE_URL, SYSTEM_KEY
-npm run dev               # hoặc: npm start
+npm run dev               # build rồi chạy, tự nạp lại khi dist đổi
 ```
 
 Service lắng nghe ở `http://localhost:3100`, health check tại `GET /health`.
+
+| Lệnh | Việc |
+|---|---|
+| `npm run build` | Biên dịch `src/` → `dist/` |
+| `npm run typecheck` | Kiểm kiểu, không xuất file |
+| `npm test` | Build rồi chạy unit test (`node --test`) |
+| `npm start` | Chạy bản đã build |
+| `node scripts/e2e-check.mjs` | Kiểm end-to-end với upstream giả (xem dưới) |
+
+## Kiểm thử không cần upstream thật
+
+`scripts/mock-upstream.mjs` dựng một upstream giả theo **đúng contract của NextX Comm** (đọc từ
+`ZaloPersonalWebhookController` và `GetZaloPersonalSessionsQuery`): 7 đường webhook + endpoint
+cấp phiên, xác thực `X-System-Key` fail-closed y như thật.
+
+```bash
+npm run build
+node scripts/e2e-check.mjs     # dựng mock + service, đo 17 điểm, in bảng kết quả
+```
+
+Kiểm được: service gọi đúng endpoint upstream kèm đúng header, đọc được DTO phiên, chịu được
+cookies hỏng mà không sập, và mã trạng thái của từng route khi chưa có phiên.
+**Không** kiểm được luồng tin thật — cái đó cần người quét QR bằng app Zalo.
 
 ## Docker
 
@@ -84,12 +109,9 @@ thu hồi thì không cứu được bằng máy — cần người thật quét
 - Đường đẩy inbound là **fire-and-forget**: không hàng đợi, không retry. Upstream restart hoặc
   trả 5xx đúng khoảnh khắc đó là mất tin, vì Zalo không gửi lại như webhook chính thức.
 - API Zalo cá nhân là API không chính thức — Zalo đổi là có thể gãy.
-
-## Test
-
-```bash
-npm test
-```
+- Payload từ zca-js được khai kiểu **lỏng có chủ đích** (`ZaloRaw` trong `src/types.ts`): Zalo
+  đổi shape không báo trước, mô hình hoá cứng chỉ tạo cảm giác an toàn giả. Kiểu chặt được áp
+  cho thứ service **tự dựng** — payload đẩy đi upstream, hình dạng phiên, kết quả bóc tin.
 
 ## Giấy phép
 

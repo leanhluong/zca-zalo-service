@@ -26,7 +26,14 @@ jobs:
 
       - run: npm ci
 
-      - run: npm test
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Unit tests
+        run: npm test
+
+      - name: End-to-end (upstream giả)
+        run: node scripts/e2e-check.mjs
 
   docker:
     runs-on: ubuntu-latest

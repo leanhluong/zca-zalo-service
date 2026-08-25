@@ -1,9 +1,11 @@
 node_modules
+dist
 npm-debug.log
 .git
 .github
 .env
 *.log
-**/*.test.js
+**/*.test.ts
 README.md
+docs
 docker-compose.yml

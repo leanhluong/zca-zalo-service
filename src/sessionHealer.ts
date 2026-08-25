@@ -1,3 +1,4 @@
+import { errMsg } from './errors.js';
 // ─────────────────────────────────────────────────────────────────────────────
 // Tự khôi phục phiên Zalo khi WebSocket đóng hẳn.
 //
@@ -24,17 +25,33 @@ const BACKOFF_MS = [30_000, 120_000, 300_000];
 /** Sau khoảng này không có lần chết nào thì bộ đếm lần thử được reset. */
 const RESET_AFTER_MS = 30 * 60 * 1000;
 
-// accountId → { attempts, lastAttemptAt, running, timer }
-const state = new Map();
+interface HealState {
+  attempts: number;
+  lastAttemptAt: number;
+  running: boolean;
+  timer: NodeJS.Timeout | null;
+}
 
-/** Hàm đăng nhập lại thật sự — sessionRestore.js nạp vào lúc khởi động (tránh vòng import). */
-let healer = null;
+/** Hàm đăng nhập lại một account. Trả true nếu khôi phục được. */
+export type HealerFn = (accountId: string) => Promise<boolean>;
 
-export function setHealer(fn) {
+export interface HealOptions {
+  code?: number | null;
+  reason?: string;
+  /** Chỉ dùng trong test để khỏi phải chờ backoff thật. */
+  delayMsOverride?: number | null;
+}
+
+const state = new Map<string, HealState>();
+
+/** Hàm đăng nhập lại thật sự — sessionRestore.ts nạp vào lúc khởi động (tránh vòng import). */
+let healer: HealerFn | null = null;
+
+export function setHealer(fn: HealerFn): void {
   healer = fn;
 }
 
-function stateOf(accountId) {
+function stateOf(accountId: string): HealState {
   const now = Date.now();
   let s = state.get(accountId);
   if (!s || now - (s.lastAttemptAt ?? 0) > RESET_AFTER_MS) {
@@ -45,7 +62,7 @@ function stateOf(accountId) {
 }
 
 /** Xoá lịch tự chữa đang chờ + reset bộ đếm — gọi khi phiên đã sống lại bằng đường khác (quét QR). */
-export function cancelHealing(accountId) {
+export function cancelHealing(accountId: string): void {
   const s = state.get(accountId);
   if (!s) return;
   if (s.timer) clearTimeout(s.timer);
@@ -56,7 +73,10 @@ export function cancelHealing(accountId) {
  * Lên lịch đăng nhập lại cho accountId. Không ném lỗi, không chặn caller.
  * Trả về true nếu đã lên lịch, false nếu hết lượt / đang chạy / chưa có healer.
  */
-export function healAccount(accountId, { code = null, reason = '', delayMsOverride = null } = {}) {
+export function healAccount(
+  accountId: string,
+  { code = null, reason = '', delayMsOverride = null }: HealOptions = {},
+): boolean {
   if (!accountId) return false;
   if (!healer) {
     console.warn(`[healer] chưa nạp healer — bỏ qua account=${accountId}`);
@@ -87,7 +107,7 @@ export function healAccount(accountId, { code = null, reason = '', delayMsOverri
     s.timer = null;
     s.running = true;
     try {
-      const ok = await healer(accountId);
+      const ok = await healer!(accountId);
       if (ok) {
         console.log(`[healer] account=${accountId} ✅ đăng nhập lại THÀNH CÔNG (lần ${s.attempts})`);
         state.delete(accountId);
@@ -95,7 +115,7 @@ export function healAccount(accountId, { code = null, reason = '', delayMsOverri
         console.error(`[healer] account=${accountId} ❌ đăng nhập lại thất bại (lần ${s.attempts}/${MAX_ATTEMPTS})`);
       }
     } catch (err) {
-      console.error(`[healer] account=${accountId} lỗi khi đăng nhập lại:`, err?.message);
+      console.error(`[healer] account=${accountId} lỗi khi đăng nhập lại:`, errMsg(err));
     } finally {
       s.running = false;
     }

@@ -4,11 +4,16 @@ import path from 'path';
 import fs from 'fs/promises';
 import crypto from 'crypto';
 import { getSessionByAccountId, listSessions } from '../sessionStore.js';
+import { errMsg, errName } from '../errors.js';
+import type { Response } from 'express';
+import type { SessionRecord, ZaloApi, ZaloRaw } from '../types.js';
 
 const router = express.Router();
 
-// Lookup + guard session (mirror messages.js resolveSession). Trả session hoặc gửi lỗi qua res.
-function resolveSession(res, tag, accountId) {
+// Lookup + guard session (mirror messages.ts resolveSession). Trả session hoặc gửi lỗi qua res.
+type ReadySession = SessionRecord & { api: ZaloApi };
+
+function resolveSession(res: Response, tag: string, accountId: string): ReadySession | null {
   const session = getSessionByAccountId(accountId);
   if (!session) {
     const active = listSessions();
@@ -27,12 +32,12 @@ function resolveSession(res, tag, accountId) {
     res.status(503).json({ error: 'API not ready yet — login still in progress' });
     return null;
   }
-  return session;
+  return session as ReadySession;
 }
 
-// Chuẩn hoá message lỗi zca-js → thông điệp RÕ cho upstream/FE (mirror messages.js humanizeSendError).
-function humanizeSendError(err) {
-  const msg = err?.message ?? 'Unknown error';
+// Chuẩn hoá message lỗi zca-js → thông điệp RÕ cho upstream/FE (mirror messages.ts humanizeSendError).
+function humanizeSendError(err: unknown): string {
+  const msg = errMsg(err) ?? 'Unknown error';
   if (/Missing `imageMetadataGetter`/i.test(msg)) {
     return 'Bridge chưa cấu hình đọc metadata ảnh (imageMetadataGetter)';
   }
@@ -42,20 +47,20 @@ function humanizeSendError(err) {
   return msg;
 }
 
-function delay(ms) {
+function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-// Retry ngắn cho lỗi transient (mạng/upload chập chờn) — mirror messages.js withRetry.
-async function withRetry(fn, tag, attempts = 3) {
-  let lastErr;
+// Retry ngắn cho lỗi transient (mạng/upload chập chờn) — mirror messages.ts withRetry.
+async function withRetry<T>(fn: () => Promise<T>, tag: string, attempts = 3): Promise<T> {
+  let lastErr: unknown;
   for (let i = 1; i <= attempts; i++) {
     try {
       return await fn();
     } catch (err) {
       lastErr = err;
       if (i < attempts) {
-        console.warn(`[${tag}] attempt ${i}/${attempts} failed: ${err?.message} — retrying...`);
+        console.warn(`[${tag}] attempt ${i}/${attempts} failed: ${errMsg(err)} — retrying...`);
         await delay(300 * i);
       }
     }
@@ -66,7 +71,7 @@ async function withRetry(fn, tag, attempts = 3) {
 // Tải fileUrl về file tạm trong os.tmpdir(). Trả tmpPath.
 // changeGroupAvatar nhận avatarSource là ĐƯỜNG DẪN FILE LOCAL (string) → nó fs.readFileSync +
 // getImageMetaData(path). Vì vậy avatar phải download về tmp trước (giống send-image).
-async function downloadToTmp(fileUrl, tag = 'download') {
+async function downloadToTmp(fileUrl: string, tag = 'download'): Promise<string> {
   return withRetry(async () => {
     const resp = await fetch(fileUrl);
     if (!resp.ok) throw new Error(`Failed to download file (HTTP ${resp.status})`);
@@ -84,10 +89,10 @@ async function downloadToTmp(fileUrl, tag = 'download') {
 }
 
 // Chuẩn hoá memberIds body → mảng string không rỗng.
-function normalizeMemberIds(memberIds) {
+function normalizeMemberIds(memberIds: unknown): string[] {
   if (memberIds == null) return [];
   const arr = Array.isArray(memberIds) ? memberIds : [memberIds];
-  return arr.map((m) => (m != null ? String(m) : null)).filter((m) => m != null && m !== '');
+  return arr.map((m) => (m != null ? String(m) : null)).filter((m): m is string => m != null && m !== '');
 }
 
 // POST /groups/add-member — thêm thành viên vào nhóm.
@@ -119,8 +124,8 @@ router.post('/add-member', async (req, res) => {
     console.log(`[groups/add-member] OK — groupId=${groupId} errorMembers=${errorMembers.length}`);
     res.json({ ok: true, errorMembers });
   } catch (err) {
-    console.error(`[groups/add-member] 500 — groupId=${groupId}: ${err?.message}`);
-    res.status(500).json({ error: humanizeSendError(err), code: err?.name });
+    console.error(`[groups/add-member] 500 — groupId=${groupId}: ${errMsg(err)}`);
+    res.status(500).json({ error: humanizeSendError(err), code: errName(err) });
   }
 });
 
@@ -153,8 +158,8 @@ router.post('/remove-member', async (req, res) => {
     console.log(`[groups/remove-member] OK — groupId=${groupId} errorMembers=${errorMembers.length}`);
     res.json({ ok: true, errorMembers });
   } catch (err) {
-    console.error(`[groups/remove-member] 500 — groupId=${groupId}: ${err?.message}`);
-    res.status(500).json({ error: humanizeSendError(err), code: err?.name });
+    console.error(`[groups/remove-member] 500 — groupId=${groupId}: ${errMsg(err)}`);
+    res.status(500).json({ error: humanizeSendError(err), code: errName(err) });
   }
 });
 
@@ -184,8 +189,8 @@ router.post('/rename', async (req, res) => {
     console.log(`[groups/rename] OK — groupId=${groupId} status=${result?.status ?? '-'}`);
     res.json({ ok: true, status: result?.status });
   } catch (err) {
-    console.error(`[groups/rename] 500 — groupId=${groupId}: ${err?.message}`);
-    res.status(500).json({ error: humanizeSendError(err), code: err?.name });
+    console.error(`[groups/rename] 500 — groupId=${groupId}: ${errMsg(err)}`);
+    res.status(500).json({ error: humanizeSendError(err), code: errName(err) });
   }
 });
 
@@ -209,19 +214,19 @@ router.post('/avatar', async (req, res) => {
   const session = resolveSession(res, 'groups/avatar', accountId);
   if (!session) return;
 
-  let tmpPath = null;
+  let tmpPath: string | null = null;
   try {
     tmpPath = await downloadToTmp(avatarUrl, 'groups/avatar');
     console.log(`[groups/avatar] downloaded → ${tmpPath}, changing avatar groupId=${groupId}...`);
     await withRetry(
-      () => session.api.changeGroupAvatar(tmpPath, String(groupId)),
+      () => session.api.changeGroupAvatar(tmpPath!, String(groupId)),
       'groups/avatar-zalo'
     );
     console.log(`[groups/avatar] OK — groupId=${groupId}`);
     res.json({ ok: true });
   } catch (err) {
-    console.error(`[groups/avatar] 500 — groupId=${groupId}: ${err?.message}`);
-    res.status(500).json({ error: humanizeSendError(err), code: err?.name });
+    console.error(`[groups/avatar] 500 — groupId=${groupId}: ${errMsg(err)}`);
+    res.status(500).json({ error: humanizeSendError(err), code: errName(err) });
   } finally {
     if (tmpPath) {
       try { await fs.unlink(tmpPath); } catch (e) { /* best-effort cleanup */ }
@@ -250,7 +255,7 @@ router.post('/create', async (req, res) => {
   if (!session) return;
 
   try {
-    const options = { members };
+    const options: ZaloRaw = { members };
     if (name != null && name !== '') options.name = String(name);
     const result = await withRetry(
       () => session.api.createGroup(options),
@@ -261,8 +266,8 @@ router.post('/create', async (req, res) => {
     console.log(`[groups/create] OK — groupId=${newGroupId ?? '-'} errorMembers=${errorMembers.length}`);
     res.json({ ok: true, groupId: newGroupId, errorMembers });
   } catch (err) {
-    console.error(`[groups/create] 500 — ${err?.message}`);
-    res.status(500).json({ error: humanizeSendError(err), code: err?.name });
+    console.error(`[groups/create] 500 — ${errMsg(err)}`);
+    res.status(500).json({ error: humanizeSendError(err), code: errName(err) });
   }
 });
 
